@@ -16,6 +16,7 @@ class LabelingWrapper(QWidget):
         output=None,
         output_file=None,
         output_dir=None,
+        pose_config_path=None,
     ):
         super().__init__()
         self.parent = parent
@@ -28,6 +29,7 @@ class LabelingWrapper(QWidget):
             output=output,
             output_file=output_file,
             output_dir=output_dir,
+            pose_config_path=pose_config_path,
         )
 
         # Create the main layout and put labeling into

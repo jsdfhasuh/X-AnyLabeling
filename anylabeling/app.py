@@ -142,6 +142,12 @@ def main():
         help="config file or yaml-format string",
         default=None,
     )
+    parser.add_argument(
+        "--pose-cfg",
+        dest="pose_cfg",
+        help="pose configuration file path for pose annotation",
+        default=None,
+    )
     # config for the gui
     parser.add_argument(
         "--nodata",
@@ -258,6 +264,7 @@ def main():
     filename = config_from_args.pop("filename")
     output = config_from_args.pop("output")
     config_file_or_yaml = config_from_args.pop("config")
+    pose_config_path = config_from_args.pop("pose_cfg", None)
     if config_file_or_yaml is None:
         config_file_or_yaml = os.path.join(
             get_work_directory(), ".xanylabelingrc"
@@ -327,6 +334,7 @@ def main():
         filename=filename,
         output_file=output_file,
         output_dir=output_dir,
+        pose_config_path=pose_config_path,
     )
 
     if reset_config:
