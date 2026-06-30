@@ -44,6 +44,7 @@ from . import utils
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
 from .logger import logger
+from . import pose_config as pose_config_utils
 from .shape import Shape
 from .utils.file_search import (
     parse_search_pattern,
@@ -97,6 +98,7 @@ class LabelingWidget(LabelDialog):
         output=None,
         output_file=None,
         output_dir=None,
+        pose_config_path=None,
     ):
         self.parent = parent
         if output is not None:
@@ -122,6 +124,9 @@ class LabelingWidget(LabelDialog):
         self.fn_to_index = {}
         self.cache_auto_label = None
         self.cache_auto_label_group_id = None
+        self.pose_config_path = pose_config_path
+        self.pose_config = None
+        self.pending_pose_class = None
 
         # see configs/anylabeling_config.yaml for valid configuration
         if config is None:
@@ -155,6 +160,7 @@ class LabelingWidget(LabelDialog):
         Shape.line_width = self._config["shape"]["line_width"]
 
         super(LabelDialog, self).__init__()
+        self.pose_config = self._load_pose_config(pose_config_path)
 
         # Whether we need to save or not.
         self.dirty = False
@@ -299,6 +305,7 @@ class LabelingWidget(LabelDialog):
             rotation=self._config["canvas"].get("rotation", {}),
             mask=self._config["canvas"].get("mask", {}),
         )
+        self.canvas.set_pose_config(self.pose_config)
         self.canvas.zoom_request.connect(self.zoom_request)
 
         # Compare view support
@@ -572,6 +579,15 @@ class LabelingWidget(LabelDialog):
             self.tr("Start drawing rectangles"),
             enabled=False,
         )
+        create_pose_mode = action(
+            self.tr("Create Pose"),
+            self.create_pose_mode,
+            shortcuts.get("create_pose"),
+            "cartesian",
+            self.tr("Create pose keypoints from a bounding box"),
+            enabled=False,
+        )
+        create_pose_mode.setVisible(self.pose_config is not None)
         create_rotation_mode = action(
             self.tr("Create Rotation"),
             lambda: self.toggle_draw_mode(False, create_mode="rotation"),
@@ -1531,6 +1547,7 @@ class LabelingWidget(LabelDialog):
             create_mode=create_mode,
             edit_mode=edit_mode,
             create_rectangle_mode=create_rectangle_mode,
+            create_pose_mode=create_pose_mode,
             create_rotation_mode=create_rotation_mode,
             create_circle_mode=create_circle_mode,
             create_line_mode=create_line_mode,
@@ -1649,6 +1666,7 @@ class LabelingWidget(LabelDialog):
             menu=(
                 create_mode,
                 create_rectangle_mode,
+                create_pose_mode,
                 create_rotation_mode,
                 create_circle_mode,
                 create_line_mode,
@@ -1670,6 +1688,7 @@ class LabelingWidget(LabelDialog):
                 close,
                 create_mode,
                 create_rectangle_mode,
+                create_pose_mode,
                 create_rotation_mode,
                 create_circle_mode,
                 create_line_mode,
@@ -1899,6 +1918,7 @@ class LabelingWidget(LabelDialog):
             None,
             create_mode,
             self.actions.create_rectangle_mode,
+            self.actions.create_pose_mode,
             self.actions.create_rotation_mode,
             self.actions.create_circle_mode,
             self.actions.create_line_mode,
@@ -2255,6 +2275,151 @@ class LabelingWidget(LabelDialog):
         msg_box.exec_()
         self.parent.parent.close()
 
+    def _load_pose_config(self, pose_config_path):
+        if not pose_config_path:
+            return None
+        try:
+            pose_config = pose_config_utils.load_pose_config(
+                pose_config_path
+            )
+            logger.info(f"Loaded pose config: {pose_config_path}")
+            return pose_config
+        except Exception as exc:
+            logger.warning(f"Failed to load pose config: {exc}")
+            QMessageBox.warning(
+                self,
+                self.tr("Pose Config"),
+                self.tr(
+                    "Failed to load pose_config.yaml. "
+                    "Pose annotation is disabled, but normal annotation "
+                    "can continue."
+                )
+                + f"\n\n{exc}",
+                QMessageBox.Ok,
+            )
+            return None
+
+    def _sync_pose_action_state(self):
+        if not hasattr(self, "actions"):
+            return
+        action = getattr(self.actions, "create_pose_mode", None)
+        if action is None:
+            return
+        has_pose_config = self.pose_config is not None
+        action.setVisible(has_pose_config)
+        action.setEnabled(
+            has_pose_config
+            and self.image_path is not None
+            and self.pending_pose_class is None
+        )
+
+    def _clear_pose_mode(self):
+        self.pending_pose_class = None
+        if hasattr(self, "canvas"):
+            self.canvas.clear_pose_creation_class()
+        self._sync_pose_action_state()
+
+    def create_pose_mode(self):
+        if not self.pose_config:
+            return
+        pose_classes = pose_config_utils.class_names(self.pose_config)
+        if not pose_classes:
+            return
+        if len(pose_classes) == 1:
+            pose_class = pose_classes[0]
+        else:
+            pose_class, ok = QtWidgets.QInputDialog.getItem(
+                self,
+                self.tr("Create Pose"),
+                self.tr("Class:"),
+                pose_classes,
+                0,
+                False,
+            )
+            if not ok or not pose_class:
+                return
+
+        self.pending_pose_class = pose_class
+        self.canvas.set_pose_creation_class(pose_class)
+        self.toggle_draw_mode(False, create_mode="rectangle")
+        self._sync_pose_action_state()
+        self.status(
+            self.tr("Draw a bounding box for pose class: %s") % pose_class
+        )
+
+    @staticmethod
+    def _shape_from_pose_dict(shape_data):
+        shape = Shape(
+            label=shape_data["label"],
+            shape_type=shape_data["shape_type"],
+            flags=shape_data.get("flags", {}),
+            group_id=shape_data.get("group_id"),
+        )
+        for point in shape_data["points"]:
+            shape.add_point(QtCore.QPointF(point[0], point[1]))
+        shape.close()
+        return shape
+
+    def _finish_pose_shape(self, rectangle_shape):
+        pose_class = self.pending_pose_class
+        group_id = self.canvas.gen_new_group_id()
+        bbox_points = [
+            [point.x(), point.y()] for point in rectangle_shape.points
+        ]
+        shape_dicts = pose_config_utils.create_pose_shape_dicts(
+            self.pose_config, pose_class, bbox_points, group_id
+        )
+        rectangle_data = shape_dicts[0]
+        rectangle_shape.label = rectangle_data["label"]
+        rectangle_shape.group_id = group_id
+        rectangle_shape.flags = rectangle_data.get("flags", {})
+        rectangle_shape.points = [
+            QtCore.QPointF(point[0], point[1])
+            for point in rectangle_data["points"]
+        ]
+        rectangle_shape.close()
+
+        if self.canvas.shapes_backups:
+            self.canvas.shapes_backups.pop()
+        self.add_label(rectangle_shape)
+        for shape_data in shape_dicts[1:]:
+            point_shape = self._shape_from_pose_dict(shape_data)
+            self.canvas.shapes.append(point_shape)
+            self.add_label(point_shape, update_last_label=False)
+        self.canvas.store_shapes()
+        self.canvas.update()
+        self.actions.edit_mode.setEnabled(True)
+        self.actions.undo_last_point.setEnabled(False)
+        self.actions.undo.setEnabled(True)
+        self.set_dirty()
+        self.set_edit_mode()
+
+    def _pose_keypoints_for_selected_rectangles(self, selected_shapes):
+        if not self.pose_config:
+            return []
+        selected_set = set(selected_shapes)
+        keypoints = []
+        pose_classes = set(self.pose_config.get("classes") or {})
+        for shape in selected_shapes:
+            if shape.shape_type != "rectangle":
+                continue
+            if shape.group_id is None or shape.label not in pose_classes:
+                continue
+            keypoint_names = set(
+                self.pose_config.get("classes", {}).get(shape.label, [])
+            )
+            for candidate in self.canvas.shapes:
+                if candidate in selected_set:
+                    continue
+                if candidate.group_id != shape.group_id:
+                    continue
+                if (
+                    candidate.shape_type == "point"
+                    and candidate.label in keypoint_names
+                ):
+                    keypoints.append(candidate)
+        return keypoints
+
     def get_labeling_instruction(self):
         text_mode = self.tr("Mode:")
         text_shortcuts = self.tr("Shortcuts:")
@@ -2343,6 +2508,7 @@ class LabelingWidget(LabelDialog):
         actions = (
             self.actions.create_mode,
             self.actions.create_rectangle_mode,
+            self.actions.create_pose_mode,
             self.actions.create_rotation_mode,
             self.actions.create_circle_mode,
             self.actions.create_line_mode,
@@ -2440,6 +2606,7 @@ class LabelingWidget(LabelDialog):
             action.setEnabled(value)
         for action in self.actions.on_load_active:
             action.setEnabled(value)
+        self._sync_pose_action_state()
 
         if value and self.file_list_widget.count() > 0:
             self.actions.shape_manager.setEnabled(True)
@@ -2883,6 +3050,14 @@ class LabelingWidget(LabelDialog):
     def toggle_draw_mode(
         self, edit=True, create_mode="rectangle", disable_auto_labeling=True
     ):
+        keep_pose_mode = (
+            not edit
+            and create_mode == "rectangle"
+            and self.pending_pose_class is not None
+        )
+        if not keep_pose_mode and self.pending_pose_class is not None:
+            self._clear_pose_mode()
+
         # Disable auto labeling if needed
         if (
             disable_auto_labeling
@@ -2979,6 +3154,7 @@ class LabelingWidget(LabelDialog):
         self.label_instruction.setText(self.get_labeling_instruction())
 
     def set_edit_mode(self):
+        self._clear_pose_mode()
         # Disable auto labeling
         self.clear_auto_labeling_marks()
         self.auto_labeling_widget.set_auto_labeling_mode(None)
@@ -4000,6 +4176,24 @@ class LabelingWidget(LabelDialog):
 
         position MUST be in global coordinates.
         """
+        if (
+            self.pending_pose_class
+            and self.canvas.shapes
+            and self.canvas.shapes[-1].shape_type == "rectangle"
+        ):
+            try:
+                self._finish_pose_shape(self.canvas.shapes[-1])
+            except Exception as exc:
+                logger.warning(f"Failed to create pose annotation: {exc}")
+                rectangle_shape = self.canvas.shapes[-1]
+                self.canvas.delete_shape(rectangle_shape)
+                self._clear_pose_mode()
+                self.error_message(
+                    self.tr("Pose annotation failed"),
+                    self.tr("Failed to create pose annotation: %s") % exc,
+                )
+            return
+
         items = self.unique_label_list.selectedItems()
         text = None
         if items:
@@ -5289,7 +5483,27 @@ class LabelingWidget(LabelDialog):
                     action.setEnabled(False)
 
     def delete_selected_shape(self):
-        self.remove_labels(self.canvas.delete_selected())
+        selected_shapes = list(self.canvas.selected_shapes)
+        pose_keypoints = self._pose_keypoints_for_selected_rectangles(
+            selected_shapes
+        )
+        if pose_keypoints:
+            reply = QMessageBox.question(
+                self,
+                self.tr("Delete Pose"),
+                self.tr("Delete keypoints in the same pose group too?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                deleted_shapes = self.canvas.delete_shapes(
+                    selected_shapes + pose_keypoints
+                )
+            else:
+                deleted_shapes = self.canvas.delete_selected()
+        else:
+            deleted_shapes = self.canvas.delete_selected()
+        self.remove_labels(deleted_shapes)
         self.set_dirty()
         if self.no_shape():
             for action in self.actions.on_shapes_present:

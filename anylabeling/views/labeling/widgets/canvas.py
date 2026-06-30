@@ -10,6 +10,7 @@ from anylabeling.services.auto_labeling.types import AutoLabelingMode
 from anylabeling.views.labeling.utils.colormap import label_colormap
 
 from .. import utils
+from .. import pose_config as pose_config_utils
 from ..shape import Shape
 
 CURSOR_DEFAULT = QtCore.Qt.ArrowCursor
@@ -177,6 +178,8 @@ class Canvas(
         self.auto_decode_timer.setSingleShot(True)
         self.auto_decode_tracklet = []
         self.last_mouse_pos = None
+        self.pose_config = None
+        self.pose_creation_class = None
 
         # Compare view support
         self.compare_pixmap = None
@@ -201,6 +204,97 @@ class Canvas(
             self.parent.toggle_draw_mode(
                 False, mode.shape_type, disable_auto_labeling=False
             )
+
+    def set_pose_config(self, pose_config):
+        """Set optional pose skeleton drawing config."""
+        self.pose_config = pose_config
+        self.update()
+
+    def set_pose_creation_class(self, class_name):
+        """Enable drag-to-create pose rectangle mode for a class."""
+        self.pose_creation_class = class_name
+
+    def clear_pose_creation_class(self):
+        """Disable drag-to-create pose rectangle mode."""
+        self.pose_creation_class = None
+
+    def _is_pose_rectangle(self, shape):
+        if not self.pose_config:
+            return False
+        if shape is None or shape.group_id is None:
+            return False
+        if shape.shape_type != "rectangle":
+            return False
+        return shape.label in (self.pose_config.get("classes") or {})
+
+    @staticmethod
+    def _shape_rect_tuple(shape):
+        rect = shape.bounding_rect()
+        return (rect.left(), rect.top(), rect.right(), rect.bottom())
+
+    def _apply_pose_rectangle_transform(
+        self, rectangle_shape, old_rect, excluded_shapes=None
+    ):
+        if old_rect is None or not self._is_pose_rectangle(rectangle_shape):
+            return
+        excluded_shapes = set(excluded_shapes or [])
+        new_rect = self._shape_rect_tuple(rectangle_shape)
+        keypoint_names = set(
+            (self.pose_config.get("classes") or {}).get(
+                rectangle_shape.label, []
+            )
+        )
+        for shape in self.shapes:
+            if shape in excluded_shapes:
+                continue
+            if shape.group_id != rectangle_shape.group_id:
+                continue
+            if shape.shape_type != "point" or not shape.points:
+                continue
+            if shape.label not in keypoint_names:
+                continue
+            old_point = [shape.points[0].x(), shape.points[0].y()]
+            new_point = pose_config_utils.map_point_between_rects(
+                old_point, old_rect, new_rect
+            )
+            shape.points[0] = QtCore.QPointF(new_point[0], new_point[1])
+
+    def _finalise_pose_rectangle(self, pos):
+        if (
+            not self.current
+            or self.create_mode != "rectangle"
+            or not self.pose_creation_class
+        ):
+            return False
+
+        init_pos = self.current[0]
+        target_pos = pos
+        if len(self.line.points) > 1 and self.line[1] != self.line[0]:
+            target_pos = self.line[1]
+        if abs(init_pos.x() - target_pos.x()) < 1:
+            self.current = None
+            self.set_hiding(False)
+            self.drawing_polygon.emit(False)
+            self.update()
+            return False
+        if abs(init_pos.y() - target_pos.y()) < 1:
+            self.current = None
+            self.set_hiding(False)
+            self.drawing_polygon.emit(False)
+            self.update()
+            return False
+
+        if self.current.reach_max_points() is False:
+            min_x = init_pos.x()
+            min_y = init_pos.y()
+            max_x = target_pos.x()
+            max_y = target_pos.y()
+            self.current.add_point(QtCore.QPointF(max_x, min_y))
+            self.current.add_point(QtCore.QPointF(max_x, max_y))
+            self.current.add_point(QtCore.QPointF(min_x, max_y))
+        before_count = len(self.shapes)
+        self.finalise()
+        return len(self.shapes) > before_count
 
     def set_auto_decode_mode(self, enabled: bool):
         """Set auto decode mode"""
@@ -903,6 +997,22 @@ class Canvas(
                 self.selected_shapes_copy = []
                 self.repaint()
         elif ev.button() == QtCore.Qt.LeftButton:
+            if (
+                self.drawing()
+                and self.pose_creation_class
+                and self.create_mode == "rectangle"
+                and self.current
+            ):
+                try:
+                    pos = self.transform_pos(ev.localPos())
+                except AttributeError:
+                    return
+                if self.out_off_pixmap(pos):
+                    pos = self.intersection_point(self.current[0], pos)
+                if self._finalise_pose_rectangle(pos):
+                    self.mode_changed.emit()
+                return
+
             if self.editing():
                 if (
                     self.h_hape is not None
@@ -1095,6 +1205,11 @@ class Canvas(
         """Move a vertex. Adjust position to be bounded by pixmap border"""
         index, shape = self.h_vertex, self.h_hape
         point = shape[index]
+        old_pose_rect = (
+            self._shape_rect_tuple(shape)
+            if self._is_pose_rectangle(shape)
+            else None
+        )
         if (
             self.out_off_pixmap(pos)
             and shape.shape_type not in self.allowed_oop_shape_types
@@ -1138,6 +1253,7 @@ class Canvas(
             shape.move_vertex_by(left_index, left_shift)
         else:
             shape.move_vertex_by(index, pos - point)
+        self._apply_pose_rectangle_transform(shape, old_pose_rect)
 
     def bounded_move_shapes(self, shapes, pos):
         """Move shapes. Adjust position to be bounded by pixmap border"""
@@ -1168,8 +1284,17 @@ class Canvas(
         # self.calculateOffsets(self.selectedShapes, pos)
         dp = pos - self.prev_point
         if dp:
+            pose_rects = {
+                shape: self._shape_rect_tuple(shape)
+                for shape in shapes
+                if self._is_pose_rectangle(shape)
+            }
             for shape in shapes:
                 shape.move_by(dp)
+            for shape, old_rect in pose_rects.items():
+                self._apply_pose_rectangle_transform(
+                    shape, old_rect, excluded_shapes=shapes
+                )
             self.prev_point = pos
             return True
         return False
@@ -1224,13 +1349,22 @@ class Canvas(
 
     def delete_selected(self):
         """Remove selected shapes"""
+        return self.delete_shapes(self.selected_shapes)
+
+    def delete_shapes(self, shapes):
+        """Remove specific shapes from the canvas."""
         deleted_shapes = []
-        if self.selected_shapes:
-            for shape in self.selected_shapes:
+        selection_changed = False
+        for shape in list(shapes):
+            if shape in self.shapes:
                 self.shapes.remove(shape)
                 deleted_shapes.append(shape)
+            while shape in self.selected_shapes:
+                self.selected_shapes.remove(shape)
+                selection_changed = True
+        if deleted_shapes:
             self.store_shapes()
-            self.selected_shapes = []
+        if deleted_shapes or selection_changed:
             self.update()
         return deleted_shapes
 
@@ -1266,6 +1400,30 @@ class Canvas(
         self.prev_point = point
         if not self.bounded_move_shapes(shapes, point - offset):
             self.bounded_move_shapes(shapes, point + offset)
+
+    def _draw_pose_skeletons(self, painter):
+        """Draw project pose skeleton lines without changing saved shapes."""
+        if not self.pose_config:
+            return
+        drawable_shapes = [
+            shape
+            for shape in self.shapes
+            if (shape.selected or not self._hide_backround)
+            and self.is_visible(shape)
+        ]
+        segments = pose_config_utils.skeleton_segments(
+            drawable_shapes, self.pose_config
+        )
+        if not segments:
+            return
+
+        pen = QtGui.QPen(QtGui.QColor(0, 180, 255, 220))
+        pen.setStyle(Qt.SolidLine)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setWidth(max(1, int(round(3.0 / Shape.scale))))
+        painter.setPen(pen)
+        for segment in segments:
+            painter.drawLine(segment["start"], segment["end"])
 
     # QT Overload
     def paintEvent(self, event):  # noqa: C901
@@ -1556,6 +1714,8 @@ class Canvas(
                 p.setPen(pen)
                 p.setBrush(Qt.NoBrush)
                 p.drawPath(mask_path)
+
+        self._draw_pose_skeletons(p)
 
         # Draw degrees
         for shape in self.shapes:
@@ -2257,12 +2417,18 @@ class Canvas(
 
             shape = self.selected_shapes[0]
             wheel_up = delta.y() > 0
+            old_pose_rect = (
+                self._shape_rect_tuple(shape)
+                if self._is_pose_rectangle(shape)
+                else None
+            )
 
             if shape.contains_point(pos):
                 self._scale_rectangle(shape, wheel_up)
             else:
                 self._adjust_rectangle_edge(shape, pos, wheel_up)
 
+            self._apply_pose_rectangle_transform(shape, old_pose_rect)
             self.store_shapes()
             self.shape_moved.emit()
             self.update()
