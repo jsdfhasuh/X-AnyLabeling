@@ -196,7 +196,7 @@ class ModelManager(QObject):
             with open(config_file, "r", encoding="utf-8") as f:
                 model_config = yaml.safe_load(f)
                 model_config["config_file"] = os.path.abspath(config_file)
-        except Exception as e:
+        except Exception:
             logger.error(
                 "An error occurred while loading the custom model: "
                 "The config file is invalid."
@@ -2105,7 +2105,7 @@ class ModelManager(QObject):
                 )
 
         except Exception as e:  # noqa
-            logger.error(f"Error in predict_shapes: {e}")
+            logger.exception(f"Error in predict_shapes: {e}")
             template = "Error in model prediction: {error_message}"
             translated_template = self.tr(template)
             error_text = translated_template.format(error_message=str(e))

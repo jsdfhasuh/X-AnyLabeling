@@ -46,6 +46,29 @@ def _as_scalar(value, default=None):
     return value
 
 
+def _as_float(value, default=0.0):
+    value = _as_scalar(value, default)
+    if value is None:
+        return default
+    return float(value)
+
+
+def _as_int(value, default=0):
+    value = _as_scalar(value, default)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _as_flat_array(values, default=None, dtype=float):
+    array = np.asarray(values, dtype=dtype).reshape(-1)
+    if default is not None and array.size < len(default):
+        padded = np.asarray(default, dtype=dtype)
+        padded[: array.size] = array
+        return padded
+    return array
+
+
 class YOLO(Model):
     class Meta:
         required_config_names = [
@@ -477,13 +500,15 @@ class YOLO(Model):
                 )
                 shapes.append(shape)
             if self.task == "pose":
-                label = str(self.classes[int(class_id)])
+                label = str(self.classes[_as_int(class_id)])
                 keypoint_name = self.keypoint_name[label]
                 for j, kpt in enumerate(keypoint):
-                    if len(kpt) == 2:
-                        x, y, s = *kpt, 1.0
-                    else:
-                        x, y, s = kpt
+                    x, y, s = _as_flat_array(
+                        kpt, default=[0, 0, 1.0]
+                    )[:3]
+                    x = _as_float(x)
+                    y = _as_float(y)
+                    s = _as_float(s)
                     inside_flag = point_in_bbox((x, y), box)
                     if (
                         (x == 0 and y == 0)
@@ -525,10 +550,10 @@ class YOLO(Model):
             (Shape): A Shape object representing the rectangle.
         """
         class_id = _as_scalar(class_id, 0)
-        pose_id = _as_scalar(pose_id, 0)
-        score = _as_scalar(score, 0.0)
+        pose_id = _as_int(pose_id)
+        score = _as_float(score)
         track_id = _as_scalar(track_id)
-        x1, y1, x2, y2 = box.astype(float)
+        x1, y1, x2, y2 = _as_flat_array(box, default=[0, 0, 0, 0])[:4]
         shape = Shape(flags={})
         shape.add_point(QtCore.QPointF(x1, y1))
         shape.add_point(QtCore.QPointF(x2, y1))
@@ -536,13 +561,13 @@ class YOLO(Model):
         shape.add_point(QtCore.QPointF(x1, y2))
         shape.shape_type = "rectangle"
         shape.closed = True
-        shape.label = str(self.classes[int(class_id)])
-        shape.score = float(score)
+        shape.label = str(self.classes[_as_int(class_id)])
+        shape.score = score
         shape.selected = False
         if self.task == "pose":
-            shape.group_id = int(pose_id)
+            shape.group_id = pose_id
         if self.tracker and track_id is not None:
-            shape.group_id = int(track_id)
+            shape.group_id = _as_int(track_id)
         return shape
 
     def create_polygon_shape(
@@ -565,18 +590,19 @@ class YOLO(Model):
             shape (Shape): A Shape object representing the polygon.
         """
         class_id = _as_scalar(class_id, 0)
-        score = _as_scalar(score, 0.0)
+        score = _as_float(score)
         track_id = _as_scalar(track_id)
         shape = Shape(flags={})
         for p in point:
-            shape.add_point(QtCore.QPointF(int(p[0]), int(p[1])))
+            x, y = _as_flat_array(p, default=[0, 0])[:2]
+            shape.add_point(QtCore.QPointF(int(x), int(y)))
         shape.shape_type = "polygon"
         shape.closed = True
-        shape.label = str(self.classes[int(class_id)])
-        shape.score = float(score)
+        shape.label = str(self.classes[_as_int(class_id)])
+        shape.score = score
         shape.selected = False
         if self.tracker and track_id is not None:
-            shape.group_id = int(track_id)
+            shape.group_id = _as_int(track_id)
         return shape
 
     def create_keypoint_shape(
@@ -604,10 +630,10 @@ class YOLO(Model):
             (Shape): A Shape object representing the keypoint.
         """
         x, y = keypoint
-        x = _as_scalar(x, 0)
-        y = _as_scalar(y, 0)
-        score = _as_scalar(score, 0.0)
-        pose_id = _as_scalar(pose_id, 0)
+        x = _as_float(x)
+        y = _as_float(y)
+        score = _as_float(score)
+        pose_id = _as_int(pose_id)
         class_id = _as_scalar(class_id, 0)
         track_id = _as_scalar(track_id)
         shape = Shape(flags={})
@@ -615,12 +641,12 @@ class YOLO(Model):
         shape.shape_type = "point"
         shape.difficult = False
         if self.tracker and track_id is not None:
-            shape.group_id = int(track_id)
+            shape.group_id = _as_int(track_id)
         else:
-            shape.group_id = int(class_id)
+            shape.group_id = _as_int(class_id)
         shape.closed = True
-        shape.label = keypoint_name[int(pose_id)]
-        shape.score = float(score)
+        shape.label = keypoint_name[pose_id]
+        shape.score = score
         shape.selected = False
         return shape
 
@@ -645,8 +671,9 @@ class YOLO(Model):
             (Shape): A Shape object representing the oriented bounding box.
         """
         class_id = _as_scalar(class_id, 0)
-        score = _as_scalar(score, 0.0)
+        score = _as_float(score)
         track_id = _as_scalar(track_id)
+        box = _as_flat_array(box, default=[0, 0, 0, 0, 0])
         poly = xywhr2xyxyxyxy(box)
         x0, y0 = poly[0]
         x1, y1 = poly[1]
@@ -661,11 +688,11 @@ class YOLO(Model):
         shape.shape_type = "rotation"
         shape.closed = True
         shape.direction = direction
-        shape.label = str(self.classes[int(class_id)])
-        shape.score = float(score)
+        shape.label = str(self.classes[_as_int(class_id)])
+        shape.score = score
         shape.selected = False
         if self.tracker and track_id is not None:
-            shape.group_id = int(track_id)
+            shape.group_id = _as_int(track_id)
         return shape
 
     @staticmethod
