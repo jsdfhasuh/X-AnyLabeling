@@ -33,9 +33,6 @@ LABEL_PADDING_X_PX = 4
 LABEL_PADDING_Y_PX = 2
 LABEL_GAP_PX = 3
 LABEL_EDGE_MARGIN_PX = 1
-LABEL_PROTECTION_MARGIN_PX = (
-    max(LABEL_GAP_PX, Shape.point_size / 2.0) + LABEL_EDGE_MARGIN_PX
-)
 
 
 class Canvas(
@@ -1460,37 +1457,104 @@ class Canvas(
         return screen_rect
 
     @staticmethod
+    def _label_protection_distance():
+        """Return the current screen-space clearance around a shape."""
+        return max(LABEL_GAP_PX, Shape.point_size / 2.0) + LABEL_EDGE_MARGIN_PX
+
+    def _shape_label_occupied_rects(self, shape, transform):
+        """Map the shape's visible description and attributes to the screen."""
+        try:
+            shape_rect = shape.bounding_rect()
+        except (AssertionError, IndexError):
+            return {}
+
+        occupied_rects = {}
+        if self.show_texts and bool(getattr(shape, "description", None)):
+            font_size = int(max(6.0, int(round(8.0 / Shape.scale))))
+            font_metrics = QtGui.QFontMetrics(QtGui.QFont("Arial", font_size))
+            text_width = font_metrics.tightBoundingRect(
+                shape.description
+            ).width()
+            rect_width = text_width + 2 * LABEL_PADDING_X_PX
+            rect_height = font_metrics.height() + 2 * LABEL_PADDING_Y_PX
+            description_rect = QtCore.QRectF(
+                int(shape_rect.x()),
+                int(shape_rect.y() - rect_height),
+                rect_width,
+                rect_height,
+            )
+            occupied_rects["top"] = transform.mapRect(
+                description_rect
+            ).normalized()
+
+        if self.show_attributes and bool(getattr(shape, "attributes", None)):
+            font_size = int(max(8.0, int(round(10.0 / Shape.scale))))
+            font = QtGui.QFont("Arial", font_size, QtGui.QFont.Bold)
+            font_metrics = QtGui.QFontMetrics(font)
+            attribute_lines = [
+                f"{key}: {value}" for key, value in shape.attributes.items()
+            ]
+            max_width = max(
+                font_metrics.tightBoundingRect(line).width()
+                for line in attribute_lines
+            )
+            rect_width = max_width + 16
+            rect_height = (
+                len(attribute_lines) * font_metrics.height()
+                + 2 * LABEL_PADDING_Y_PX
+            )
+            attributes_rect = QtCore.QRectF(
+                int(shape_rect.x()),
+                int(shape_rect.y() + shape_rect.height() + 1),
+                rect_width,
+                rect_height,
+            )
+            occupied_rects["bottom"] = transform.mapRect(
+                attributes_rect
+            ).normalized()
+
+        return occupied_rects
+
+    @staticmethod
     def _label_candidate_rects(
         shape_rect,
         label_size,
+        protection_distance,
         prefer_top=True,
         prefer_bottom=True,
+        top_occupied_rect=None,
+        bottom_occupied_rect=None,
     ):
         """Return stable external label candidates and an inside fallback."""
         width = float(label_size.width())
         height = float(label_size.height())
-        clearance = LABEL_PROTECTION_MARGIN_PX
+        top_edge = shape_rect.top()
+        if top_occupied_rect is not None:
+            top_edge = min(top_edge, top_occupied_rect.top())
+        bottom_edge = shape_rect.bottom()
+        if bottom_occupied_rect is not None:
+            bottom_edge = max(bottom_edge, bottom_occupied_rect.bottom())
         candidates = {
             "top": QtCore.QRectF(
                 shape_rect.left(),
-                shape_rect.top() - height - clearance,
+                top_edge - height - protection_distance,
                 width,
                 height,
             ),
             "bottom": QtCore.QRectF(
                 shape_rect.left(),
-                shape_rect.bottom() + clearance,
+                bottom_edge + protection_distance,
                 width,
                 height,
             ),
             "right": QtCore.QRectF(
-                shape_rect.right() + clearance,
+                shape_rect.right() + protection_distance,
                 shape_rect.top(),
                 width,
                 height,
             ),
             "left": QtCore.QRectF(
-                shape_rect.left() - width - clearance,
+                shape_rect.left() - width - protection_distance,
                 shape_rect.top(),
                 width,
                 height,
@@ -1532,19 +1596,26 @@ class Canvas(
         shape_rect,
         label_size,
         image_rect,
+        occupied_rects=None,
     ):
         """Choose a visible label position outside the shape when possible."""
+        if occupied_rects is None:
+            occupied_rects = {}
         prefer_top = not (
             self.show_texts and bool(getattr(shape, "description", None))
         )
         prefer_bottom = not (
             self.show_attributes and bool(getattr(shape, "attributes", None))
         )
+        protection_distance = self._label_protection_distance()
         candidates = self._label_candidate_rects(
             shape_rect,
             label_size,
+            protection_distance,
             prefer_top=prefer_top,
             prefer_bottom=prefer_bottom,
+            top_occupied_rect=occupied_rects.get("top"),
+            bottom_occupied_rect=occupied_rects.get("bottom"),
         )
         image_bounds = image_rect.normalized().adjusted(
             LABEL_EDGE_MARGIN_PX,
@@ -1559,44 +1630,40 @@ class Canvas(
             return None
 
         protected_rect = shape_rect.adjusted(
-            -LABEL_PROTECTION_MARGIN_PX,
-            -LABEL_PROTECTION_MARGIN_PX,
-            LABEL_PROTECTION_MARGIN_PX,
-            LABEL_PROTECTION_MARGIN_PX,
+            -protection_distance,
+            -protection_distance,
+            protection_distance,
+            protection_distance,
         )
-        rounded_protection = max(LABEL_GAP_PX, Shape.point_size / 2.0)
         rounded_protected_rect = shape_rect.adjusted(
-            -rounded_protection,
-            -rounded_protection,
-            rounded_protection,
-            rounded_protection,
+            -protection_distance,
+            -protection_distance,
+            protection_distance,
+            protection_distance,
+        )
+        visible_occupied_rects = tuple(
+            rect
+            for rect in occupied_rects.values()
+            if rect is not None and rect.isValid() and not rect.isEmpty()
         )
 
         for candidate in candidates[:-1]:
-            overlaps_horizontally = (
-                candidate.right() > shape_rect.left()
-                and candidate.left() < shape_rect.right()
-            )
-            is_top = (
-                overlaps_horizontally
-                and candidate.bottom() <= shape_rect.top()
-            )
-            is_bottom = (
-                overlaps_horizontally
-                and candidate.top() >= shape_rect.bottom()
-            )
-            if (is_top and not prefer_top) or (
-                is_bottom and not prefer_bottom
-            ):
-                continue
             if not image_bounds.contains(candidate):
                 continue
             if candidate.intersects(protected_rect):
+                continue
+            if any(
+                candidate.intersects(rect) for rect in visible_occupied_rects
+            ):
                 continue
             rounded = self._rounded_label_rect(candidate)
             if not image_bounds.contains(rounded):
                 continue
             if rounded.intersects(rounded_protected_rect):
+                continue
+            if any(
+                rounded.intersects(rect) for rect in visible_occupied_rects
+            ):
                 continue
             return rounded
 
@@ -1614,9 +1681,11 @@ class Canvas(
             )
         )
         fallback = self._rounded_label_rect(fallback)
-        if image_bounds.contains(fallback):
-            return fallback
-        return None
+        if not image_bounds.contains(fallback):
+            return None
+        if any(fallback.intersects(rect) for rect in visible_occupied_rects):
+            return None
+        return fallback
 
     @staticmethod
     def _elide_label_text(label_text, font_metrics, image_rect):
@@ -1709,11 +1778,15 @@ class Canvas(
                     )
                     if shape_rect is None:
                         continue
+                    occupied_rects = self._shape_label_occupied_rects(
+                        shape, label_transform
+                    )
                     label_rect = self._place_shape_label(
                         shape,
                         shape_rect,
                         label_size,
                         image_rect,
+                        occupied_rects,
                     )
                 else:
                     label_rect = self._legacy_shape_label_rect(

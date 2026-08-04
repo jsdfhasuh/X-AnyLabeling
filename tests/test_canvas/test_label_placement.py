@@ -54,11 +54,13 @@ class LabelPainterSpy:
 class TestLabelPlacement(unittest.TestCase):
 
     def setUp(self):
+        self.original_point_size = Shape.point_size
         self.canvas = Canvas(parent=None)
         self.canvas.show_texts = True
         self.canvas.show_attributes = True
 
     def tearDown(self):
+        Shape.point_size = self.original_point_size
         self.canvas.close()
         self.canvas.deleteLater()
         APPLICATION.processEvents()
@@ -116,14 +118,21 @@ class TestLabelPlacement(unittest.TestCase):
         shape_rect,
         label_size=QtCore.QSizeF(42, 18),
         image_rect=None,
+        transform=None,
     ):
         if image_rect is None:
             image_rect = self._image_bounds()
+        if transform is None:
+            transform = QtGui.QTransform()
+        occupied_rects = self.canvas._shape_label_occupied_rects(
+            shape, transform
+        )
         return self.canvas._place_shape_label(
             shape,
             shape_rect,
             label_size,
             image_rect,
+            occupied_rects,
         )
 
     def _prepare_render_canvas(self, width=200, height=160):
@@ -236,6 +245,36 @@ class TestLabelPlacement(unittest.TestCase):
         self.assertFalse(label_rect.intersects(shape_rect))
         self.assertFalse(label_rect.intersects(vertex_protection))
 
+    def test_default_point_size_keeps_box_labels_external(self):
+        Shape.point_size = 10
+        protection_distance = self.canvas._label_protection_distance()
+        self.assertEqual(protection_distance, 6)
+
+        for shape_type in ("rectangle", "polygon", "rotation"):
+            with self.subTest(shape_type=shape_type):
+                shape = self._make_shape(
+                    shape_type=shape_type,
+                    bounds=(90, 80, 130, 120),
+                )
+                shape_rect = self.canvas._shape_label_screen_rect(
+                    shape, QtGui.QTransform()
+                )
+                label_rect = self._place(shape, shape_rect)
+                vertex_protection = shape_rect.adjusted(-5, -5, 5, 5)
+
+                self.assertFalse(label_rect.intersects(shape_rect))
+                self.assertFalse(label_rect.intersects(vertex_protection))
+                self.assertTrue(
+                    label_rect.bottom()
+                    <= shape_rect.top() - protection_distance
+                    or label_rect.top()
+                    >= shape_rect.bottom() + protection_distance
+                    or label_rect.right()
+                    <= shape_rect.left() - protection_distance
+                    or label_rect.left()
+                    >= shape_rect.right() + protection_distance
+                )
+
     def test_polygon_and_rotation_use_mapped_bounding_rectangles(self):
         transform = QtGui.QTransform()
         transform.translate(7, 11)
@@ -254,7 +293,10 @@ class TestLabelPlacement(unittest.TestCase):
 
                 image_rect = transform.mapRect(self._image_bounds(120, 100))
                 label_rect = self._place(
-                    shape, screen_rect, image_rect=image_rect
+                    shape,
+                    screen_rect,
+                    image_rect=image_rect,
+                    transform=transform,
                 )
                 self.assertFalse(label_rect.intersects(screen_rect))
 
@@ -284,6 +326,48 @@ class TestLabelPlacement(unittest.TestCase):
             label_rect.left(), shape_rect.right() + LABEL_GAP_PX
         )
 
+    def test_description_degraded_top_candidate_remains_available(self):
+        Shape.point_size = 10
+        shape = self._make_shape(
+            bounds=(1, 80, 119, 110),
+            description="inspection note",
+        )
+        shape_rect = QtCore.QRectF(1, 80, 118, 30)
+        image_rect = self._image_bounds(120, 120)
+        occupied_rects = self.canvas._shape_label_occupied_rects(
+            shape, QtGui.QTransform()
+        )
+
+        label_rect = self._place(shape, shape_rect, image_rect=image_rect)
+
+        self.assertLessEqual(
+            label_rect.bottom(),
+            occupied_rects["top"].top()
+            - self.canvas._label_protection_distance(),
+        )
+        self.assertFalse(label_rect.intersects(occupied_rects["top"]))
+
+    def test_attribute_degraded_bottom_candidate_remains_available(self):
+        Shape.point_size = 10
+        shape = self._make_shape(
+            bounds=(1, 1, 119, 31),
+            attributes={"state": "ok"},
+        )
+        shape_rect = QtCore.QRectF(1, 1, 118, 30)
+        image_rect = self._image_bounds(120, 120)
+        occupied_rects = self.canvas._shape_label_occupied_rects(
+            shape, QtGui.QTransform()
+        )
+
+        label_rect = self._place(shape, shape_rect, image_rect=image_rect)
+
+        self.assertGreaterEqual(
+            label_rect.top(),
+            occupied_rects["bottom"].bottom()
+            + self.canvas._label_protection_distance(),
+        )
+        self.assertFalse(label_rect.intersects(occupied_rects["bottom"]))
+
     def test_inside_fallback_is_used_only_when_external_positions_fail(self):
         shape = self._make_shape(bounds=(2, 2, 198, 158))
         shape_rect = QtCore.QRectF(2, 2, 196, 156)
@@ -294,6 +378,21 @@ class TestLabelPlacement(unittest.TestCase):
         self.assertTrue(
             self._image_bounds().adjusted(1, 1, -1, -1).contains(label_rect)
         )
+
+    def test_inside_fallback_does_not_overlap_attributes(self):
+        shape = self._make_shape(
+            bounds=(1, 5, 49, 7),
+            attributes={"state": "ok"},
+        )
+        shape_rect = QtCore.QRectF(1, 5, 48, 2)
+
+        label_rect = self._place(
+            shape,
+            shape_rect,
+            image_rect=self._image_bounds(50, 30),
+        )
+
+        self.assertIsNone(label_rect)
 
     def test_long_label_is_elided_without_mutating_shape(self):
         original_label = "calibration_target_with_a_very_long_identifier"
@@ -486,6 +585,47 @@ class TestLabelPlacement(unittest.TestCase):
 
         self.assertEqual(image.pixelColor(sample), color)
         self.assertFalse(label_rect.intersects(shape.bounding_rect()))
+
+    def test_canvas_grab_renders_named_small_box_labels_externally(self):
+        Shape.point_size = 10
+        self._prepare_render_canvas(width=360, height=240)
+        shape_specs = (
+            ("cal_hole1", (90, 80, 100, 90), QtGui.QColor(12, 90, 40)),
+            ("cal_hole2", (180, 3, 190, 13), QtGui.QColor(170, 90, 5)),
+            (
+                "target_hole",
+                (280, 185, 292, 197),
+                QtGui.QColor(20, 80, 170),
+            ),
+        )
+        shapes = []
+        label_rects = []
+        for label, bounds, color in shape_specs:
+            shape = self._make_shape(
+                label=label,
+                bounds=bounds,
+                line_color=color,
+            )
+            shape.selected = True
+            shapes.append(shape)
+            label_rects.append(self._rendered_label_rect(shape))
+        self.canvas.load_shapes(shapes)
+
+        self.canvas.show()
+        APPLICATION.processEvents()
+        image = self.canvas.grab().toImage()
+
+        for shape, label_rect in zip(shapes, label_rects):
+            with self.subTest(label=shape.label):
+                shape_rect = shape.bounding_rect()
+                vertex_protection = shape_rect.adjusted(-5, -5, 5, 5)
+                sample = QtCore.QPoint(
+                    int(label_rect.left()) + 1,
+                    int(label_rect.top()) + 1,
+                )
+                self.assertEqual(image.pixelColor(sample), shape.line_color)
+                self.assertFalse(label_rect.intersects(shape_rect))
+                self.assertFalse(label_rect.intersects(vertex_protection))
 
     def test_canvas_grab_honors_both_visibility_controls(self):
         self._prepare_render_canvas()
