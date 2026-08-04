@@ -1090,7 +1090,7 @@ class LabelingWidget(LabelDialog):
             self.tr("Show Labels"),
             lambda x: self.set_canvas_params("show_labels", x),
             shortcut=shortcuts["show_labels"],
-            tip=self.tr("Show label inside shapes"),
+            tip=self.tr("Show labels near shapes"),
             icon=None,
             checkable=True,
             checked=self._config["show_labels"],
@@ -1100,7 +1100,7 @@ class LabelingWidget(LabelDialog):
         show_scores = action(
             self.tr("Show Scores"),
             lambda x: self.set_canvas_params("show_scores", x),
-            tip=self.tr("Show score inside shapes"),
+            tip=self.tr("Show scores with labels"),
             icon=None,
             checkable=True,
             checked=self._config["show_scores"],
@@ -2279,9 +2279,7 @@ class LabelingWidget(LabelDialog):
         if not pose_config_path:
             return None
         try:
-            pose_config = pose_config_utils.load_pose_config(
-                pose_config_path
-            )
+            pose_config = pose_config_utils.load_pose_config(pose_config_path)
             logger.info(f"Loaded pose config: {pose_config_path}")
             return pose_config
         except Exception as exc:
@@ -3445,7 +3443,7 @@ class LabelingWidget(LabelDialog):
                                 break
         return
 
-    def update_attributes(self, shape_index):
+    def update_attributes(self, shape_index):  # noqa: C901
         if shape_index >= len(self.canvas.shapes) or shape_index < 0:
             self.hide_attributes_panel()
             return
@@ -4171,7 +4169,7 @@ class LabelingWidget(LabelDialog):
         self.canvas.load_shapes([item.shape() for item in self.label_list])
 
     # Callback functions:
-    def new_shape(self):
+    def new_shape(self):  # noqa: C901
         """Pop-up and give focus to the label editor.
 
         position MUST be in global coordinates.
@@ -4695,7 +4693,8 @@ class LabelingWidget(LabelDialog):
                     self.update_navigator_shapes()
             else:
                 logger.warning(
-                    f"Shape associated with the hidden item was not found in label list, could not show."
+                    "Shape associated with the hidden item was not found in "
+                    "label list, could not show."
                 )
 
     def get_next_files(self, filename, num_files):

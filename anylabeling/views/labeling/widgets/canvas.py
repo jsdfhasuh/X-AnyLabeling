@@ -28,6 +28,15 @@ SMALL_ROTATION_INCREMENT = math.radians(0.1)
 
 LABEL_COLORMAP = label_colormap()
 
+LABEL_FONT_POINT_SIZE = 8.0
+LABEL_PADDING_X_PX = 4
+LABEL_PADDING_Y_PX = 2
+LABEL_GAP_PX = 3
+LABEL_EDGE_MARGIN_PX = 1
+LABEL_PROTECTION_MARGIN_PX = (
+    max(LABEL_GAP_PX, Shape.point_size / 2.0) + LABEL_EDGE_MARGIN_PX
+)
+
 
 class Canvas(
     QtWidgets.QWidget
@@ -1425,6 +1434,306 @@ class Canvas(
         for segment in segments:
             painter.drawLine(segment["start"], segment["end"])
 
+    def _build_shape_label_text(self, shape):
+        """Build the group, label, and optional score display text."""
+        label_text = "" if shape.label is None else str(shape.label)
+        if shape.group_id is not None:
+            label_text = f"id:{shape.group_id} {label_text}"
+        if shape.score is not None and self.show_scores:
+            label_text += f" {float(shape.score):.2f}"
+        return label_text
+
+    @staticmethod
+    def _shape_label_screen_rect(shape, transform):
+        """Map a shape bounding rectangle into screen coordinates."""
+        if not shape.points:
+            return None
+        try:
+            shape_rect = shape.bounding_rect()
+        except (AssertionError, IndexError):
+            return None
+        if not shape_rect.isValid() or shape_rect.isEmpty():
+            return None
+        screen_rect = transform.mapRect(shape_rect).normalized()
+        if not screen_rect.isValid() or screen_rect.isEmpty():
+            return None
+        return screen_rect
+
+    @staticmethod
+    def _label_candidate_rects(
+        shape_rect,
+        label_size,
+        prefer_top=True,
+        prefer_bottom=True,
+    ):
+        """Return stable external label candidates and an inside fallback."""
+        width = float(label_size.width())
+        height = float(label_size.height())
+        clearance = LABEL_PROTECTION_MARGIN_PX
+        candidates = {
+            "top": QtCore.QRectF(
+                shape_rect.left(),
+                shape_rect.top() - height - clearance,
+                width,
+                height,
+            ),
+            "bottom": QtCore.QRectF(
+                shape_rect.left(),
+                shape_rect.bottom() + clearance,
+                width,
+                height,
+            ),
+            "right": QtCore.QRectF(
+                shape_rect.right() + clearance,
+                shape_rect.top(),
+                width,
+                height,
+            ),
+            "left": QtCore.QRectF(
+                shape_rect.left() - width - clearance,
+                shape_rect.top(),
+                width,
+                height,
+            ),
+        }
+
+        order = []
+        if prefer_top:
+            order.append("top")
+        if prefer_bottom:
+            order.append("bottom")
+        order.extend(("right", "left"))
+        if not prefer_top:
+            order.append("top")
+        if not prefer_bottom:
+            order.append("bottom")
+
+        inside = QtCore.QRectF(
+            shape_rect.left(),
+            shape_rect.top(),
+            width,
+            height,
+        )
+        return [candidates[name] for name in order] + [inside]
+
+    @staticmethod
+    def _rounded_label_rect(rect):
+        """Round a label rectangle immediately before screen drawing."""
+        return QtCore.QRectF(
+            int(round(rect.x())),
+            int(round(rect.y())),
+            int(math.ceil(rect.width())),
+            int(math.ceil(rect.height())),
+        )
+
+    def _place_shape_label(
+        self,
+        shape,
+        shape_rect,
+        label_size,
+        image_rect,
+    ):
+        """Choose a visible label position outside the shape when possible."""
+        prefer_top = not (
+            self.show_texts and bool(getattr(shape, "description", None))
+        )
+        prefer_bottom = not (
+            self.show_attributes and bool(getattr(shape, "attributes", None))
+        )
+        candidates = self._label_candidate_rects(
+            shape_rect,
+            label_size,
+            prefer_top=prefer_top,
+            prefer_bottom=prefer_bottom,
+        )
+        image_bounds = image_rect.normalized().adjusted(
+            LABEL_EDGE_MARGIN_PX,
+            LABEL_EDGE_MARGIN_PX,
+            -LABEL_EDGE_MARGIN_PX,
+            -LABEL_EDGE_MARGIN_PX,
+        )
+        if (
+            label_size.width() > image_bounds.width()
+            or label_size.height() > image_bounds.height()
+        ):
+            return None
+
+        protected_rect = shape_rect.adjusted(
+            -LABEL_PROTECTION_MARGIN_PX,
+            -LABEL_PROTECTION_MARGIN_PX,
+            LABEL_PROTECTION_MARGIN_PX,
+            LABEL_PROTECTION_MARGIN_PX,
+        )
+        rounded_protection = max(LABEL_GAP_PX, Shape.point_size / 2.0)
+        rounded_protected_rect = shape_rect.adjusted(
+            -rounded_protection,
+            -rounded_protection,
+            rounded_protection,
+            rounded_protection,
+        )
+
+        for candidate in candidates[:-1]:
+            overlaps_horizontally = (
+                candidate.right() > shape_rect.left()
+                and candidate.left() < shape_rect.right()
+            )
+            is_top = (
+                overlaps_horizontally
+                and candidate.bottom() <= shape_rect.top()
+            )
+            is_bottom = (
+                overlaps_horizontally
+                and candidate.top() >= shape_rect.bottom()
+            )
+            if (is_top and not prefer_top) or (
+                is_bottom and not prefer_bottom
+            ):
+                continue
+            if not image_bounds.contains(candidate):
+                continue
+            if candidate.intersects(protected_rect):
+                continue
+            rounded = self._rounded_label_rect(candidate)
+            if not image_bounds.contains(rounded):
+                continue
+            if rounded.intersects(rounded_protected_rect):
+                continue
+            return rounded
+
+        fallback = candidates[-1]
+        fallback.moveLeft(
+            min(
+                max(fallback.left(), image_bounds.left()),
+                image_bounds.right() - fallback.width(),
+            )
+        )
+        fallback.moveTop(
+            min(
+                max(fallback.top(), image_bounds.top()),
+                image_bounds.bottom() - fallback.height(),
+            )
+        )
+        fallback = self._rounded_label_rect(fallback)
+        if image_bounds.contains(fallback):
+            return fallback
+        return None
+
+    @staticmethod
+    def _elide_label_text(label_text, font_metrics, image_rect):
+        """Elide display text to the width currently available in the image."""
+        max_text_width = int(
+            math.floor(
+                image_rect.width()
+                - 2 * LABEL_EDGE_MARGIN_PX
+                - 2 * LABEL_PADDING_X_PX
+            )
+        )
+        if max_text_width <= 0:
+            return ""
+        return font_metrics.elidedText(
+            label_text,
+            Qt.ElideRight,
+            max_text_width,
+        )
+
+    @staticmethod
+    def _legacy_shape_label_rect(shape, label_size, transform):
+        """Keep the established label anchors for non-bounding shapes."""
+        if not shape.points:
+            return None
+        point = transform.map(shape.points[0])
+        width = float(label_size.width())
+        height = float(label_size.height())
+        if shape.shape_type == "circle":
+            rect = QtCore.QRectF(
+                point.x() - width / 2.0,
+                point.y() - height / 2.0,
+                width,
+                height,
+            )
+        elif shape.shape_type in ("line", "linestrip", "point"):
+            rect = QtCore.QRectF(
+                point.x() + Shape.point_size,
+                point.y() - 15,
+                width,
+                height,
+            )
+        else:
+            return None
+        return Canvas._rounded_label_rect(rect)
+
+    def _draw_shape_labels(self, painter):
+        """Draw shape labels in screen coordinates with fixed UI sizing."""
+        label_transform = painter.transform()
+        image_rect = label_transform.mapRect(
+            QtCore.QRectF(self.pixmap.rect())
+        ).normalized()
+        painter.save()
+        try:
+            painter.resetTransform()
+            font = QtGui.QFont("Arial", int(round(LABEL_FONT_POINT_SIZE)))
+            painter.setFont(font)
+            font_metrics = QtGui.QFontMetrics(font)
+
+            for shape in self.shapes:
+                if not shape.visible or not self.is_visible(shape):
+                    continue
+                if shape.label in (
+                    "AUTOLABEL_OBJECT",
+                    "AUTOLABEL_ADD",
+                    "AUTOLABEL_REMOVE",
+                ):
+                    continue
+
+                label_text = self._build_shape_label_text(shape)
+                if not label_text:
+                    continue
+                display_text = self._elide_label_text(
+                    label_text, font_metrics, image_rect
+                )
+                if not display_text:
+                    continue
+
+                label_size = QtCore.QSizeF(
+                    font_metrics.horizontalAdvance(display_text)
+                    + 2 * LABEL_PADDING_X_PX,
+                    font_metrics.height() + 2 * LABEL_PADDING_Y_PX,
+                )
+                if shape.shape_type in (
+                    "rectangle",
+                    "polygon",
+                    "rotation",
+                ):
+                    shape_rect = self._shape_label_screen_rect(
+                        shape, label_transform
+                    )
+                    if shape_rect is None:
+                        continue
+                    label_rect = self._place_shape_label(
+                        shape,
+                        shape_rect,
+                        label_size,
+                        image_rect,
+                    )
+                else:
+                    label_rect = self._legacy_shape_label_rect(
+                        shape, label_size, label_transform
+                    )
+                if label_rect is None:
+                    continue
+
+                painter.fillRect(label_rect, shape.line_color)
+                painter.setPen(QtGui.QColor("#000000"))
+                text_x = int(label_rect.left() + LABEL_PADDING_X_PX)
+                text_y = int(
+                    label_rect.top()
+                    + LABEL_PADDING_Y_PX
+                    + font_metrics.ascent()
+                )
+                painter.drawText(text_x, text_y, display_text)
+        finally:
+            painter.restore()
+
     # QT Overload
     def paintEvent(self, event):  # noqa: C901
         """Paint event for canvas"""
@@ -1861,123 +2170,7 @@ class Canvas(
 
         # Draw labels
         if self.show_labels:
-            p.setFont(
-                QtGui.QFont(
-                    "Arial", int(max(6.0, int(round(8.0 / Shape.scale))))
-                )
-            )
-            labels = []
-            for shape in self.shapes:
-                if not shape.visible:
-                    continue
-                d_react = shape.point_size / shape.scale
-                if not shape.visible:
-                    continue
-                if shape.label in [
-                    "AUTOLABEL_OBJECT",
-                    "AUTOLABEL_ADD",
-                    "AUTOLABEL_REMOVE",
-                ]:
-                    continue
-                label_text = (
-                    (
-                        f"id:{shape.group_id} "
-                        if shape.group_id is not None
-                        else ""
-                    )
-                    + (f"{shape.label}")
-                    + (
-                        f" {float(shape.score):.2f}"
-                        if (shape.score is not None and self.show_scores)
-                        else ""
-                    )
-                )
-                if not label_text:
-                    continue
-                fm = QtGui.QFontMetrics(p.font())
-                text_rect = fm.tightBoundingRect(label_text)
-                padding_x = 4
-                padding_y = 2
-                rect_width = text_rect.width() + 2 * padding_x
-                rect_height = fm.height() + 2 * padding_y
-
-                if shape.shape_type in ["rectangle", "polygon", "rotation"]:
-                    try:
-                        bbox = shape.bounding_rect()
-                    except IndexError:
-                        continue
-                    rect = QtCore.QRect(
-                        int(bbox.x()),
-                        int(bbox.y()),
-                        rect_width,
-                        rect_height,
-                    )
-                    text_pos = QtCore.QPoint(
-                        int(bbox.x() + padding_x),
-                        int(bbox.y() + rect_height - padding_y - fm.descent()),
-                    )
-                elif shape.shape_type == "circle":
-                    points = shape.points
-                    if not points:
-                        continue
-                    point = points[0]
-                    rect = QtCore.QRect(
-                        int(point.x() - rect_width / 2),
-                        int(point.y() - rect_height / 2),
-                        rect_width,
-                        rect_height,
-                    )
-                    text_pos = QtCore.QPoint(
-                        int(point.x() - rect_width / 2 + padding_x),
-                        int(
-                            point.y()
-                            + rect_height / 2
-                            - padding_y
-                            - fm.descent()
-                        ),
-                    )
-                elif shape.shape_type in [
-                    "line",
-                    "linestrip",
-                    "point",
-                ]:
-                    points = shape.points
-                    if not points:
-                        continue
-                    point = points[0]
-                    rect = QtCore.QRect(
-                        int(point.x() + d_react),
-                        int(point.y() - 15),
-                        rect_width,
-                        rect_height,
-                    )
-                    text_pos = QtCore.QPoint(
-                        int(point.x() + d_react + padding_x),
-                        int(
-                            point.y()
-                            - 15
-                            + rect_height
-                            - padding_y
-                            - fm.descent()
-                        ),
-                    )
-                else:
-                    continue
-                labels.append((shape, rect, text_pos, label_text))
-
-            pen = QtGui.QPen(QtGui.QColor("#FFA500"), 8, Qt.SolidLine)
-            p.setPen(pen)
-            for shape, rect, _, _ in labels:
-                if not shape.visible:
-                    continue
-                p.fillRect(rect, shape.line_color)
-
-            pen = QtGui.QPen(QtGui.QColor("#000000"), 8, Qt.SolidLine)
-            p.setPen(pen)
-            for _, _, text_pos, label_text in labels:
-                if not shape.visible:
-                    continue
-                p.drawText(text_pos, label_text)
+            self._draw_shape_labels(p)
 
         # Draw mouse coordinates
         if self.cross_line_show:

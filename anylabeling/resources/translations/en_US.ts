@@ -2637,8 +2637,8 @@ Reset the label as {}.</source>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1073"/>
-        <source>Show label inside shapes</source>
-        <translation type="unfinished"></translation>
+        <source>Show labels near shapes</source>
+        <translation>Show labels near shapes</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="855"/>
@@ -2677,8 +2677,8 @@ Reset the label as {}.</source>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1084"/>
-        <source>Show score inside shapes</source>
-        <translation type="unfinished"></translation>
+        <source>Show scores with labels</source>
+        <translation>Show scores with labels</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1115"/>

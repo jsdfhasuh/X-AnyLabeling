@@ -3001,8 +3001,8 @@ Results have been saved to:
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1084"/>
-        <source>Show score inside shapes</source>
-        <translation>在对象内部显示置信度</translation>
+        <source>Show scores with labels</source>
+        <translation>随标签显示置信度</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1045"/>
@@ -3307,8 +3307,8 @@ Reset the label as {}.</source>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1073"/>
-        <source>Show label inside shapes</source>
-        <translation>显示标签</translation>
+        <source>Show labels near shapes</source>
+        <translation>在图形附近显示标签</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="796"/>
