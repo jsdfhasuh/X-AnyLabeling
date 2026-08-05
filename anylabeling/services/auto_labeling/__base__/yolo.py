@@ -76,6 +76,15 @@ def _as_flat_array(values, expected_lengths, dtype=float):
     return normalized
 
 
+def _normalize_box_batch(boxes, expected_length):
+    boxes = np.asarray(boxes)
+    if len(boxes) == 0:
+        return np.empty((0, expected_length), dtype=float)
+    return np.stack(
+        [_as_flat_array(box, expected_length) for box in boxes], axis=0
+    )
+
+
 def _as_pose_keypoint(values):
     keypoint = _as_flat_array(values, (2, 3))
     if keypoint.size == 2:
@@ -460,6 +469,8 @@ class YOLO(Model):
             blob = self.preprocess(image, upsample_mode="letterbox")
         outputs = self.inference(blob)
         boxes, class_ids, scores, masks, keypoints = self.postprocess(outputs)
+        box_length = 5 if self.task == "obb" else 4
+        boxes = _normalize_box_batch(boxes, box_length)
 
         points = [[] for _ in range(len(boxes))]
         if self.task == "seg" and masks is not None:
@@ -498,8 +509,6 @@ class YOLO(Model):
         for i, (box, class_id, score, point, keypoint, track_id) in enumerate(
             zip(boxes, class_ids, scores, points, keypoints, track_ids)
         ):
-            box_length = 5 if self.task == "obb" else 4
-            box = _as_flat_array(box, box_length)
             class_id = _as_scalar(class_id, 0)
             score = _as_scalar(score, 0.0)
             track_id = _as_scalar(track_id)
