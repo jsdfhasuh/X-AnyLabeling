@@ -503,9 +503,7 @@ class YOLO(Model):
                 label = str(self.classes[_as_int(class_id)])
                 keypoint_name = self.keypoint_name[label]
                 for j, kpt in enumerate(keypoint):
-                    x, y, s = _as_flat_array(
-                        kpt, default=[0, 0, 1.0]
-                    )[:3]
+                    x, y, s = _as_flat_array(kpt, default=[0, 0, 1.0])[:3]
                     x = _as_float(x)
                     y = _as_float(y)
                     s = _as_float(s)
