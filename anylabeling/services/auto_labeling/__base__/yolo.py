@@ -60,13 +60,27 @@ def _as_int(value, default=0):
     return int(value)
 
 
-def _as_flat_array(values, default=None, dtype=float):
-    array = np.asarray(values, dtype=dtype).reshape(-1)
-    if default is not None and array.size < len(default):
-        padded = np.asarray(default, dtype=dtype)
-        padded[: array.size] = array
-        return padded
-    return array
+def _as_flat_array(values, expected_lengths, dtype=float):
+    array = np.asarray(values, dtype=dtype)
+    normalized = np.squeeze(array)
+    if isinstance(expected_lengths, int):
+        expected_lengths = (expected_lengths,)
+    else:
+        expected_lengths = tuple(expected_lengths)
+    expected_text = " or ".join(str(length) for length in expected_lengths)
+    if normalized.ndim != 1 or normalized.size not in expected_lengths:
+        raise ValueError(
+            f"Expected {expected_text} values after removing singleton "
+            f"dimensions, got shape {array.shape}"
+        )
+    return normalized
+
+
+def _as_pose_keypoint(values):
+    keypoint = _as_flat_array(values, (2, 3))
+    if keypoint.size == 2:
+        return keypoint[0], keypoint[1], 1.0
+    return keypoint
 
 
 class YOLO(Model):
@@ -484,6 +498,8 @@ class YOLO(Model):
         for i, (box, class_id, score, point, keypoint, track_id) in enumerate(
             zip(boxes, class_ids, scores, points, keypoints, track_ids)
         ):
+            box_length = 5 if self.task == "obb" else 4
+            box = _as_flat_array(box, box_length)
             class_id = _as_scalar(class_id, 0)
             score = _as_scalar(score, 0.0)
             track_id = _as_scalar(track_id)
@@ -503,7 +519,7 @@ class YOLO(Model):
                 label = str(self.classes[_as_int(class_id)])
                 keypoint_name = self.keypoint_name[label]
                 for j, kpt in enumerate(keypoint):
-                    x, y, s = _as_flat_array(kpt, default=[0, 0, 1.0])[:3]
+                    x, y, s = _as_pose_keypoint(kpt)
                     x = _as_float(x)
                     y = _as_float(y)
                     s = _as_float(s)
@@ -551,7 +567,7 @@ class YOLO(Model):
         pose_id = _as_int(pose_id)
         score = _as_float(score)
         track_id = _as_scalar(track_id)
-        x1, y1, x2, y2 = _as_flat_array(box, default=[0, 0, 0, 0])[:4]
+        x1, y1, x2, y2 = _as_flat_array(box, 4)
         shape = Shape(flags={})
         shape.add_point(QtCore.QPointF(x1, y1))
         shape.add_point(QtCore.QPointF(x2, y1))
@@ -592,7 +608,7 @@ class YOLO(Model):
         track_id = _as_scalar(track_id)
         shape = Shape(flags={})
         for p in point:
-            x, y = _as_flat_array(p, default=[0, 0])[:2]
+            x, y = _as_flat_array(p, 2)
             shape.add_point(QtCore.QPointF(int(x), int(y)))
         shape.shape_type = "polygon"
         shape.closed = True
@@ -671,7 +687,7 @@ class YOLO(Model):
         class_id = _as_scalar(class_id, 0)
         score = _as_float(score)
         track_id = _as_scalar(track_id)
-        box = _as_flat_array(box, default=[0, 0, 0, 0, 0])
+        box = _as_flat_array(box, 5)
         poly = xywhr2xyxyxyxy(box)
         x0, y0 = poly[0]
         x1, y1 = poly[1]
