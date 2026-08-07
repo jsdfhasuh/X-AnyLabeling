@@ -1,0 +1,45 @@
+{
+  "vector_schema_version": 1,
+  "document": {
+    "version": "3.3.7",
+    "flags": {
+      "verified": true
+    },
+    "shapes": [
+      {
+        "label": "café\\lane",
+        "points": [
+          [
+            1.0,
+            -0.0
+          ],
+          [
+            5,
+            4.25
+          ]
+        ],
+        "group_id": "pose-1",
+        "shape_type": "rectangle",
+        "flags": {},
+        "attributes": {
+          "score": 1.0
+        }
+      }
+    ],
+    "imagePath": ".\\images\\.\\sample.png",
+    "imageData": "AAECAwQ=",
+    "imageHeight": 6,
+    "imageWidth": 8,
+    "description": "operator\\note é",
+    "vendor": {
+      "offset": -0.0,
+      "count": 1.0
+    }
+  },
+  "raw_hex": "0001020304",
+  "expected": {
+    "document_digest": "aldoc1:73fab71564b85657f618b2c7a13803abe1e0f6a4f4d02bb35225d93e03993b82",
+    "semantic_digest": "alsem1:a8831b4d98e571e333b035b1c00f40dfd8fc1e0e3df0d7976f7f698fb994f3ea",
+    "raw_sha256": "08bb5e5d6eaac1049ede0893d30ed022b1a4d9b5b48db414871f51c9cb35283d"
+  }
+}

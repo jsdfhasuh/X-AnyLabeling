@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import os.path as osp
 
@@ -12,6 +13,10 @@ from .label_converter import LabelConverter
 from .logger import logger
 from .schema import XLABEL_BASIC_FIELDS, create_xlabel_template
 from .shape import Shape
+from .utils.auto_labeling_commit import (
+    atomic_write_label_document,
+    resolve_existing_label,
+)
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 
@@ -151,7 +156,10 @@ class LabelFile:
             other_data = {}
         if flags is None:
             flags = {}
-        for i, shape in enumerate(shapes):
+        safe_shapes = copy.deepcopy(shapes or [])
+        safe_other_data = copy.deepcopy(other_data)
+        safe_flags = copy.deepcopy(flags)
+        for i, shape in enumerate(safe_shapes):
             if shape["shape_type"] == "rectangle":
                 sorted_box = LabelConverter.calculate_bounding_box(
                     shape["points"]
@@ -163,23 +171,29 @@ class LabelFile:
                     [xmax, ymax],
                     [xmin, ymax],
                 ]
-                shapes[i] = shape
+                safe_shapes[i] = shape
 
         data = create_xlabel_template(
-            flags=flags,
-            shapes=shapes,
+            flags=safe_flags,
+            shapes=safe_shapes,
             image_path=image_path,
             image_data=image_data,
             image_height=image_height,
             image_width=image_width,
         )
 
-        for key, value in other_data.items():
-            assert key not in data
+        for key, value in safe_other_data.items():
+            if key in data:
+                raise LabelFileError(f"other_data field collision: {key}")
             data[key] = value
         try:
-            with utils.io_open(filename, "w") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            current = resolve_existing_label(filename)
+            atomic_write_label_document(
+                filename,
+                data,
+                pre_document_digest=current.document_digest,
+                allowed_root=osp.dirname(osp.abspath(filename)),
+            )
             self.filename = filename
         except Exception as e:  # noqa
             raise LabelFileError(e) from e

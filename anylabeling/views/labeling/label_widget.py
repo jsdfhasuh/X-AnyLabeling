@@ -4809,9 +4809,9 @@ class LabelingWidget(LabelDialog):
         # TODO(jack): icc profile issue warning
         # - qt.gui.icc: fromIccProfile: failed minimal tag size sanity
         # - qt.gui.icc: fromIccProfile: invalid tag offset alignment
-        image = QtGui.QImage.fromData(self.image_data)
-
-        if image.isNull():
+        try:
+            image = utils.decode_image_for_labeling(self.image_data)
+        except (TypeError, ValueError):
             formats = [
                 f"*.{fmt.data().decode()}"
                 for fmt in QtGui.QImageReader.supportedImageFormats()

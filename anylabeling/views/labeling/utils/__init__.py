@@ -23,6 +23,7 @@ from .general import (
 )
 from .image import (
     check_img_exif,
+    decode_image_for_labeling,
     get_pil_img_dim,
     img_arr_to_b64,
     img_b64_to_arr,
