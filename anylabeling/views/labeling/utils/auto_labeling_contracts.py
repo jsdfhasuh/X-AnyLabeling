@@ -352,6 +352,31 @@ def canonical_path_identity(path):
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
 
 
+def _normalize_session_relative_path_v1(value, path):
+    _require_nonempty_string(value, path)
+    drive, _tail = ntpath.splitdrive(value)
+    if drive or ntpath.isabs(value) or posixpath.isabs(value):
+        _fail("session_path_absolute", path)
+    normalized = posixpath.normpath(value.replace("\\", "/"))
+    if normalized in {"", ".", ".."} or normalized.startswith("../"):
+        _fail("session_path_escape", path)
+    return normalized
+
+
+def _session_path_within_root_v1(root, value, path):
+    relative_path = _normalize_session_relative_path_v1(value, path)
+    candidate = canonical_path_identity(
+        os.path.join(root, *relative_path.split("/"))
+    )
+    try:
+        within_root = os.path.commonpath((root, candidate)) == root
+    except ValueError:
+        within_root = False
+    if not within_root:
+        _fail("session_path_outside_root", path)
+    return candidate
+
+
 def _require_absolute_path(value, path, canonical=False):
     _require_nonempty_string(value, path)
     if not os.path.isabs(value):
@@ -474,11 +499,15 @@ def create_session_workset_snapshot_v1(
             {
                 "sequence": len(entries),
                 "image_id": image_id,
-                "canonical_image_path": canonical_path_identity(
-                    os.path.join(root, image_relpath)
+                "canonical_image_path": _session_path_within_root_v1(
+                    root,
+                    image_relpath,
+                    f"records[{manifest_sequence}].session_image_path",
                 ),
-                "canonical_label_path": canonical_path_identity(
-                    os.path.join(root, label_relpath)
+                "canonical_label_path": _session_path_within_root_v1(
+                    root,
+                    label_relpath,
+                    f"records[{manifest_sequence}].session_label_path",
                 ),
                 "expected_image_sha256": record.get("source_image_sha256")
                 or None,
@@ -702,15 +731,14 @@ def canonicalize_annotation_document_v1(document, semantic=False):
         for index, shape in enumerate(document["shapes"]):
             _validate_shape_structure_v1(shape, f"$document.shapes[{index}]")
         _fail("invalid_annotation_document", "$document")
-    source = document
+    canonical = _canonicalize_value(document, "$document", top_level=True)
     if semantic:
-        source = {
+        return {
             key: value
-            for key, value in document.items()
-            if unicodedata.normalize("NFC", key)
-            not in SEMANTIC_EXCLUDED_TOP_LEVEL_FIELDS_V1
+            for key, value in canonical.items()
+            if key not in SEMANTIC_EXCLUDED_TOP_LEVEL_FIELDS_V1
         }
-    return _canonicalize_value(source, "$document", top_level=True)
+    return canonical
 
 
 def _canonical_json_bytes(value):
@@ -721,6 +749,55 @@ def _canonical_json_bytes(value):
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+def workset_digest_v1(entries):
+    """Return the frozen path-independent digest for workset entries."""
+
+    if type(entries) is not list:
+        _fail("expected_array", "$workset_digest.entries")
+    payload = []
+    seen_sequences = set()
+    digest_fields = (
+        "image_id",
+        "sequence",
+        "expected_image_sha256",
+        "manifest_sequence",
+    )
+    for index, entry in enumerate(entries):
+        path = f"$workset_digest.entries[{index}]"
+        entry = _require_mapping(entry, path)
+        missing = [field for field in digest_fields if field not in entry]
+        if missing:
+            _fail("missing_fields", path, ",".join(missing))
+        image_id = _require_nonempty_string(
+            entry["image_id"], f"{path}.image_id"
+        )
+        sequence = _require_integer(
+            entry["sequence"], f"{path}.sequence", minimum=0
+        )
+        if sequence in seen_sequences:
+            _fail("duplicate_sequence", f"{path}.sequence")
+        seen_sequences.add(sequence)
+        expected_sha256 = entry["expected_image_sha256"]
+        _require_sha256(
+            expected_sha256,
+            f"{path}.expected_image_sha256",
+            nullable=True,
+        )
+        manifest_sequence = entry["manifest_sequence"]
+        if manifest_sequence is not None:
+            _require_integer(
+                manifest_sequence,
+                f"{path}.manifest_sequence",
+                minimum=0,
+            )
+        payload.append(
+            [image_id, sequence, expected_sha256, manifest_sequence]
+        )
+    payload.sort(key=lambda row: row[1])
+    digest = hashlib.sha256(b"ALWORKSET1\0" + _canonical_json_bytes(payload))
+    return "alworkset1:" + digest.hexdigest()
 
 
 def canonical_document_digest_v1(document):
@@ -813,6 +890,30 @@ def validate_annotation_commit_event_v1(event):
             minimum=0,
         )
     _require_utc_timestamp(event["created_at"], "created_at")
+    digests_missing = (
+        event["document_digest"] == "MISSING"
+        and event["semantic_digest"] == "MISSING"
+    )
+    digests_present = (
+        event["document_digest"] != "MISSING"
+        and event["semantic_digest"] != "MISSING"
+    )
+    if not (digests_missing or digests_present):
+        _fail("commit_event_digest_presence_mismatch", "$commit_event")
+    expected = {
+        "CONTINUOUS": ("STAGED", "NOTIFY_ONLY", "present"),
+        "MANUAL_SAVE": ("STAGED", "APPLY_MANUAL_REVISION", "present"),
+        "AUTO_SAVE": ("STAGED", "APPLY_MANUAL_REVISION", "present"),
+        "DELETE_LABEL": ("STAGED", "APPLY_MANUAL_REVISION", "missing"),
+        "SESSION_SOURCE_SYNC": ("SOURCE", "NOTIFY_ONLY", "either"),
+    }[event["writer_kind"]]
+    if (
+        event["commit_scope"] != expected[0]
+        or event["mutation_mode"] != expected[1]
+        or (expected[2] == "present" and not digests_present)
+        or (expected[2] == "missing" and not digests_missing)
+    ):
+        _fail("commit_event_writer_combination", "$commit_event")
     expected_id = annotation_commit_event_id_v1(event)
     if event["event_id"] != expected_id:
         _fail("event_id_mismatch", "event_id")

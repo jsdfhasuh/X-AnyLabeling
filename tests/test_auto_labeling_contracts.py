@@ -27,12 +27,17 @@ from anylabeling.views.labeling.utils.auto_labeling_contracts import (
     validate_annotation_commit_event_v1,
     validate_image_input_snapshot_v1,
     validate_workset_snapshot_v1,
+    workset_digest_v1,
 )
 
 
 UTC_NOW = "2026-08-07T12:34:56Z"
 SHA_A = "a" * 64
 SHA_B = "b" * 64
+WORKSET_GOLDEN = (
+    "alworkset1:20d89441e263ed7d335568720ba35eac"
+    "7d529ef75825c0b579aaa60fe8ff16d6"
+)
 
 
 def _label_document():
@@ -178,6 +183,102 @@ class WorksetSnapshotV1Tests(unittest.TestCase):
             WORKSET_SNAPSHOT_V1_SCHEMA["properties"]["workset_schema_version"],
             {"const": 1},
         )
+
+    def test_workset_digest_has_frozen_path_independent_golden_value(self):
+        entries = [
+            {
+                "image_id": "\u56fe\u50cf-\u03b2",
+                "sequence": 2,
+                "expected_image_sha256": None,
+                "manifest_sequence": None,
+                "canonical_image_path": "ignored-image-b",
+                "canonical_label_path": "ignored-label-b",
+            },
+            {
+                "image_id": "image-a",
+                "sequence": 0,
+                "expected_image_sha256": "0" * 64,
+                "manifest_sequence": 4,
+                "canonical_image_path": "ignored-image-a",
+                "canonical_label_path": "ignored-label-a",
+            },
+        ]
+
+        self.assertEqual(workset_digest_v1(entries), WORKSET_GOLDEN)
+        paths_changed = copy.deepcopy(entries)
+        paths_changed[0]["canonical_image_path"] = "another-session-image"
+        paths_changed[0]["canonical_label_path"] = "another-session-label"
+        self.assertEqual(workset_digest_v1(paths_changed), WORKSET_GOLDEN)
+
+    def test_session_workset_rejects_absolute_and_parent_escape_paths(self):
+        for field in ("session_image_path", "session_label_path"):
+            for unsafe_path, error_code in (
+                ("/outside/a.jpg", "session_path_absolute"),
+                ("C:\\outside\\a.jpg", "session_path_absolute"),
+                ("\\\\server\\share\\a.jpg", "session_path_absolute"),
+                ("../outside/a.jpg", "session_path_escape"),
+                ("images/../../outside/a.jpg", "session_path_escape"),
+            ):
+                records = self._records()
+                records[0][field] = unsafe_path
+                with (
+                    self.subTest(field=field, unsafe_path=unsafe_path),
+                    tempfile.TemporaryDirectory() as tmp,
+                    self.assertRaisesRegex(
+                        ContractValidationError, error_code
+                    ),
+                ):
+                    create_session_workset_snapshot_v1(records, tmp, UTC_NOW)
+
+    def test_session_workset_rejects_duplicate_canonical_paths(self):
+        for field, error_code in (
+            ("session_image_path", "duplicate_image_path"),
+            ("session_label_path", "duplicate_label_path"),
+        ):
+            records = self._records()
+            records[2][field] = records[0][field]
+            with (
+                self.subTest(field=field),
+                tempfile.TemporaryDirectory() as tmp,
+                self.assertRaisesRegex(ContractValidationError, error_code),
+            ):
+                create_session_workset_snapshot_v1(records, tmp, UTC_NOW)
+
+    def test_session_workset_rejects_symlink_root_escape(self):
+        for field, link_name, safe_other_path in (
+            ("session_image_path", "images", "safe-labels/a.json"),
+            ("session_label_path", "labels", "safe-images/a.jpg"),
+        ):
+            with (
+                self.subTest(field=field),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                session_root = os.path.join(tmp, "session")
+                outside_root = os.path.join(tmp, "outside")
+                os.makedirs(session_root)
+                os.makedirs(outside_root)
+                link_path = os.path.join(session_root, link_name)
+                try:
+                    os.symlink(
+                        outside_root, link_path, target_is_directory=True
+                    )
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"symbolic links are unavailable: {exc}")
+
+                record = {
+                    "image_id": "image-a",
+                    "image_copy_succeeded": True,
+                    "session_image_path": safe_other_path,
+                    "session_label_path": safe_other_path,
+                    "source_image_sha256": SHA_A,
+                }
+                record[field] = f"{link_name}/a.jpg"
+                with self.assertRaisesRegex(
+                    ContractValidationError, "session_path_outside_root"
+                ):
+                    create_session_workset_snapshot_v1(
+                        [record], session_root, UTC_NOW
+                    )
 
 
 class ImageInputSnapshotV1Tests(unittest.TestCase):
@@ -348,6 +449,11 @@ class AnnotationCanonicalizationV1Tests(unittest.TestCase):
                 with self.assertRaises(ContractValidationError):
                     canonical_document_digest_v1(document)
 
+    def test_semantic_canonicalization_wraps_non_string_top_level_keys(self):
+        document = {"shapes": [], 7: "not-a-json-object-key"}
+        with self.assertRaisesRegex(ContractValidationError, "non_string_key"):
+            semantic_annotation_digest_v1(document)
+
 
 class AnnotationCommitEventV1Tests(unittest.TestCase):
     def _event(self):
@@ -396,6 +502,57 @@ class AnnotationCommitEventV1Tests(unittest.TestCase):
         del event["mutation_mode"]
         with self.assertRaisesRegex(ContractValidationError, "missing_fields"):
             validate_annotation_commit_event_v1(event)
+
+    def test_writer_scope_mutation_and_digest_matrix_is_closed(self):
+        valid = {
+            "CONTINUOUS": {("STAGED", "NOTIFY_ONLY", "present")},
+            "MANUAL_SAVE": {("STAGED", "APPLY_MANUAL_REVISION", "present")},
+            "AUTO_SAVE": {("STAGED", "APPLY_MANUAL_REVISION", "present")},
+            "DELETE_LABEL": {("STAGED", "APPLY_MANUAL_REVISION", "missing")},
+            "SESSION_SOURCE_SYNC": {
+                ("SOURCE", "NOTIFY_ONLY", "present"),
+                ("SOURCE", "NOTIFY_ONLY", "missing"),
+            },
+        }
+        for writer_kind, allowed in valid.items():
+            for commit_scope in ("STAGED", "SOURCE"):
+                for mutation_mode in (
+                    "NOTIFY_ONLY",
+                    "APPLY_MANUAL_REVISION",
+                ):
+                    for digest_state in ("present", "missing", "mixed"):
+                        event = self._event()
+                        event.update(
+                            writer_kind=writer_kind,
+                            commit_scope=commit_scope,
+                            mutation_mode=mutation_mode,
+                        )
+                        if digest_state == "missing":
+                            event.update(
+                                document_digest="MISSING",
+                                semantic_digest="MISSING",
+                            )
+                        elif digest_state == "mixed":
+                            event["semantic_digest"] = "MISSING"
+                        event["event_id"] = annotation_commit_event_id_v1(
+                            event
+                        )
+                        combination = (
+                            commit_scope,
+                            mutation_mode,
+                            digest_state,
+                        )
+                        with self.subTest(
+                            writer_kind=writer_kind,
+                            combination=combination,
+                        ):
+                            if combination in allowed:
+                                validate_annotation_commit_event_v1(event)
+                            else:
+                                with self.assertRaises(
+                                    ContractValidationError
+                                ):
+                                    validate_annotation_commit_event_v1(event)
 
 
 if __name__ == "__main__":
