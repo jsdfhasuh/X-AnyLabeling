@@ -87,7 +87,7 @@ class LegacyAutoRunBaselineTests(unittest.TestCase):
                 replaced["description"], "replacement-description"
             )
 
-    def test_auto_run_starts_at_the_current_image_for_supported_model(self):
+    def test_legacy_auto_run_starts_at_current_image_for_legacy_model(self):
         files = [os.path.abspath(name) for name in ("a.jpg", "b.jpg", "c.jpg")]
         widget = SimpleNamespace(
             image_list=files,
@@ -97,7 +97,7 @@ class LegacyAutoRunBaselineTests(unittest.TestCase):
             auto_labeling_widget=SimpleNamespace(
                 model_manager=SimpleNamespace(
                     loaded_model_config={
-                        "type": "yolov8",
+                        "type": "yolox",
                         "model": object(),
                     },
                     new_model_status=mock.Mock(),

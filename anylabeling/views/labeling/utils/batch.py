@@ -30,7 +30,7 @@ from anylabeling.views.labeling.utils.style import get_msg_box_style
 from anylabeling.views.labeling.widgets.popup import Popup
 
 
-__all__ = ["run_all_images"]
+__all__ = ["run_all_images", "run_all_images_legacy"]
 
 
 class TextInputDialog(QDialog):
@@ -492,7 +492,7 @@ def show_progress_dialog_and_process(self):
     QTimer.singleShot(200, lambda: process_next_image(self, progress_dialog))
 
 
-def run_all_images(self):
+def run_all_images_legacy(self):
     if len(self.image_list) < 1:
         return
 
@@ -585,3 +585,35 @@ def run_all_images(self):
         show_progress_dialog_and_process(self)
     else:
         show_progress_dialog_and_process(self)
+
+
+def run_all_images(self):
+    """Route verified models to Fast and preserve the legacy batch path."""
+
+    if len(self.image_list) < 1:
+        return None
+    auto_widget = self.auto_labeling_widget
+    manager = auto_widget.model_manager
+    model_config = manager.loaded_model_config
+    if model_config is None:
+        manager.new_model_status.emit(
+            self.tr("Model is not loaded. Choose a mode to continue.")
+        )
+        return None
+
+    from .auto_labeling_sequence import resolve_sequence_capabilities
+
+    capability = resolve_sequence_capabilities(model_config)
+    if capability.supports_fast_sequence:
+        opener = getattr(auto_widget, "open_continuous_auto_labeling", None)
+        if not callable(opener):
+            manager.new_model_status.emit(
+                self.tr("fast_sequence_entry_unavailable")
+            )
+            return False
+        return opener()
+
+    manager.new_model_status.emit(
+        self.tr("Legacy Batch：当前模型暂不支持统一快速标注流程")
+    )
+    return run_all_images_legacy(self)

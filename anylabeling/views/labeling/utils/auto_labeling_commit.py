@@ -1029,20 +1029,24 @@ def commit_label_for_image_v1(
             target_count=summary["target_count"],
             zero_target=summary["zero_target"],
         )
-        event = build_annotation_commit_event_v1(
-            project_id=project_id,
-            session_id=session_id,
-            run_id=run_id,
-            image_id=image_id,
-            attempt_id=attempt_id,
-            writer_kind="CONTINUOUS",
-            commit_scope="STAGED",
-            mutation_mode="NOTIFY_ONLY",
-            document_digest=existing.document_digest,
-            semantic_digest=existing.semantic_digest,
-            source_image_digest=source_image_digest,
-            base_item_revision=item["item_revision"],
-        )
+        event = None
+        if event_sink is not None or any(
+            value is not None for value in (project_id, session_id, run_id)
+        ):
+            event = build_annotation_commit_event_v1(
+                project_id=project_id,
+                session_id=session_id,
+                run_id=run_id,
+                image_id=image_id,
+                attempt_id=attempt_id,
+                writer_kind="CONTINUOUS",
+                commit_scope="STAGED",
+                mutation_mode="NOTIFY_ONLY",
+                document_digest=existing.document_digest,
+                semantic_digest=existing.semantic_digest,
+                source_image_digest=source_image_digest,
+                base_item_revision=item["item_revision"],
+            )
         if event_sink is not None:
             event_sink.publish(event)
             item = store.read_item(image_id)
@@ -1125,20 +1129,24 @@ def commit_label_for_image_v1(
     )
     _fault(store, "after_checkpoint_before_summary")
     store.rebuild_summary()
-    event = build_annotation_commit_event_v1(
-        project_id=project_id,
-        session_id=session_id,
-        run_id=run_id,
-        image_id=image_id,
-        attempt_id=attempt_id,
-        writer_kind="CONTINUOUS",
-        commit_scope="STAGED",
-        mutation_mode="NOTIFY_ONLY",
-        document_digest=write_result.document_digest,
-        semantic_digest=write_result.semantic_digest,
-        source_image_digest=source_image_digest,
-        base_item_revision=checkpoint["item_revision"],
-    )
+    event = None
+    if event_sink is not None or any(
+        value is not None for value in (project_id, session_id, run_id)
+    ):
+        event = build_annotation_commit_event_v1(
+            project_id=project_id,
+            session_id=session_id,
+            run_id=run_id,
+            image_id=image_id,
+            attempt_id=attempt_id,
+            writer_kind="CONTINUOUS",
+            commit_scope="STAGED",
+            mutation_mode="NOTIFY_ONLY",
+            document_digest=write_result.document_digest,
+            semantic_digest=write_result.semantic_digest,
+            source_image_digest=source_image_digest,
+            base_item_revision=checkpoint["item_revision"],
+        )
     if event_sink is not None:
         event_sink.publish(event)
         checkpoint = store.read_item(image_id)

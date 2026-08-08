@@ -178,6 +178,22 @@ class InMemoryCommitStoreV1:
             self._items[image_id] = item
             return copy.deepcopy(item)
 
+    def begin_attempt(self, image_id, attempt_id):
+        """Create or reset an uncommitted standalone item for a new attempt."""
+
+        with self._lock:
+            if image_id not in self._items:
+                return self.create_item(image_id, attempt_id)
+            item = self._items[image_id]
+            if item["staged_commit_status"] in {"prepared", "committed"}:
+                raise StoreConflictError("committed item cannot begin attempt")
+            item["latest_attempt_id"] = attempt_id
+            item["execution_status"] = "running"
+            item["failure_resolution"] = "not_applicable"
+            item["conflict"] = None
+            item["result_summary"]["skip_reason"] = None
+            return self._advance(item)
+
     def _item_for_update(self, image_id, expected_item_revision):
         try:
             item = self._items[image_id]

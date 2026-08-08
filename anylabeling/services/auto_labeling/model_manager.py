@@ -2305,6 +2305,14 @@ class ModelManager(QObject):
                 run_tracker=parameters.get("run_tracker", False),
                 existing_shapes=existing_shapes,
             )
+            payload = AutoLabelingPayload(
+                shapes=payload.shapes,
+                replace=payload.replace,
+                description=payload.description,
+                input_width=snapshot.decoded_width,
+                input_height=snapshot.decoded_height,
+                source_image_digest=snapshot.actual_sha256,
+            )
             return PredictionOutcome.succeeded(request, payload)
         except AutoLabelingCommitError as exc:
             return PredictionOutcome.failed(request, exc.code, str(exc))

@@ -174,6 +174,7 @@ class Canvas(
         self.mask_opacity = self.mask_config.get("opacity", 80)
 
         self.is_loading = False
+        self.sequence_edit_locked = False
         self.loading_text = self.tr("Loading...")
         self.loading_angle = 0
 
@@ -210,6 +211,18 @@ class Canvas(
             self.parent.toggle_draw_mode(
                 False, mode.shape_type, disable_auto_labeling=False
             )
+
+    def set_sequence_edit_locked(self, locked):
+        """Block shape mutations while preserving wheel zoom and canvas pan."""
+
+        self.sequence_edit_locked = bool(locked)
+        if self.sequence_edit_locked:
+            self.is_move_editing = False
+            self.moving_shape = False
+            self.rotating_shape = False
+            self.selected_shapes_copy = []
+            self.auto_decode_timer.stop()
+            self.restore_cursor()
 
     def set_pose_config(self, pose_config):
         """Set optional pose skeleton drawing config."""
@@ -533,6 +546,28 @@ class Canvas(
         except AttributeError:
             return
 
+        if self.sequence_edit_locked:
+            self.prev_move_point = pos
+            if QtCore.Qt.LeftButton & ev.buttons():
+                if (
+                    self.pixmap
+                    and self.pixmap.width()
+                    and self.pixmap.height()
+                ):
+                    delta = ev.localPos() - self.prev_pan_point
+                    self.prev_pan_point = ev.localPos()
+                    self.scroll_request.emit(
+                        delta.x() / (self.pixmap.width() * self.scale),
+                        Qt.Horizontal,
+                        1,
+                    )
+                    self.scroll_request.emit(
+                        delta.y() / (self.pixmap.height() * self.scale),
+                        Qt.Vertical,
+                        1,
+                    )
+            return
+
         prev_hover_shape = self.h_hape
         self.prev_move_point = pos
         self.repaint()
@@ -854,6 +889,10 @@ class Canvas(
         """Mouse press event"""
         if self.is_loading:
             return
+        if self.sequence_edit_locked:
+            if ev.button() == QtCore.Qt.LeftButton:
+                self.prev_pan_point = ev.localPos()
+            return
         pos = self.transform_pos(ev.localPos())
 
         if ev.button() == QtCore.Qt.LeftButton:
@@ -991,6 +1030,8 @@ class Canvas(
         """Mouse release event"""
         if self.is_loading:
             return
+        if self.sequence_edit_locked:
+            return
 
         if ev.button() == QtCore.Qt.RightButton:
             menu = self.menus[len(self.selected_shapes_copy) > 0]
@@ -1068,7 +1109,7 @@ class Canvas(
     # QT Overload
     def mouseDoubleClickEvent(self, _):
         """Mouse double click event"""
-        if self.is_loading:
+        if self.is_loading or self.sequence_edit_locked:
             return
 
         # Handle auto decode mode double click to finish
@@ -2670,6 +2711,7 @@ class Canvas(
 
         if (
             self.editing()
+            and not self.sequence_edit_locked
             and self.enable_wheel_rectangle_editing
             and len(self.selected_shapes) == 1
             and self.selected_shapes[0].shape_type == "rectangle"
@@ -2872,6 +2914,11 @@ class Canvas(
     # QT Overload
     def keyPressEvent(self, ev):
         """Key press event"""
+        if self.sequence_edit_locked:
+            return
+        self._key_press_event_unlocked(ev)
+
+    def _key_press_event_unlocked(self, ev):
         modifiers = ev.modifiers()
         key = ev.key()
         if self.drawing():
@@ -2914,6 +2961,11 @@ class Canvas(
     # QT Overload
     def keyReleaseEvent(self, ev):
         """Key release event"""
+        if self.sequence_edit_locked:
+            return
+        self._key_release_event_unlocked(ev)
+
+    def _key_release_event_unlocked(self, ev):
         modifiers = ev.modifiers()
         if self.drawing():
             if int(modifiers) == 0:

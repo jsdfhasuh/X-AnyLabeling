@@ -2,6 +2,7 @@ import copy
 import json
 import math
 import os
+import re
 from dataclasses import dataclass
 
 from PyQt5.QtCore import QPointF
@@ -9,6 +10,7 @@ from PyQt5.QtCore import QPointF
 
 DELIVERY_MODES = {"RETURN_ONLY", "LEGACY_CANVAS"}
 OUTCOME_STATUSES = {"succeeded", "failed", "cancelled"}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class PredictionContractError(ValueError):
@@ -139,6 +141,9 @@ class AutoLabelingPayload:
     shapes: list
     replace: bool
     description: str
+    input_width: int | None = None
+    input_height: int | None = None
+    source_image_digest: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.replace, bool):
@@ -150,6 +155,18 @@ class AutoLabelingPayload:
             _contract_error("prediction_shapes_not_list")
         if any(not isinstance(shape, dict) for shape in shapes):
             _contract_error("prediction_shape_not_object")
+        dimensions = (self.input_width, self.input_height)
+        if (dimensions[0] is None) != (dimensions[1] is None):
+            _contract_error("prediction_input_dimensions_incomplete")
+        if dimensions[0] is not None and any(
+            type(value) is not int or value <= 0 for value in dimensions
+        ):
+            _contract_error("prediction_input_dimensions_invalid")
+        if self.source_image_digest is not None and (
+            type(self.source_image_digest) is not str
+            or _SHA256_RE.fullmatch(self.source_image_digest) is None
+        ):
+            _contract_error("prediction_source_digest_invalid")
         object.__setattr__(self, "shapes", shapes)
 
 

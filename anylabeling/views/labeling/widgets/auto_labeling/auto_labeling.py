@@ -11,6 +11,8 @@ from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QPoint
 from PyQt5.QtWidgets import (
     QDialog,
     QFileDialog,
+    QPushButton,
+    QStyle,
     QWidget,
 )
 
@@ -86,8 +88,22 @@ class AutoLabelingWidget(QWidget):
         super().__init__()
         self.parent = parent
         self.auto_labeling_host_context = None
+        self.prediction_runner = None
+        self._fast_run_session = None
         current_dir = os.path.dirname(__file__)
         uic.loadUi(os.path.join(current_dir, "auto_labeling.ui"), self)
+
+        self.button_continuous_run = QPushButton(
+            self.tr("连续自动标注…"), self
+        )
+        self.button_continuous_run.setIcon(
+            self.style().standardIcon(QStyle.SP_MediaPlay)
+        )
+        self.button_continuous_run.setStyleSheet(get_highlight_button_style())
+        self.button_continuous_run.clicked.connect(
+            self.run_continuous_auto_labeling
+        )
+        self.model_selection.insertWidget(1, self.button_continuous_run)
 
         self.skip_auto_prediction = False
         self.model_manager = ModelManager()
@@ -154,6 +170,10 @@ class AutoLabelingWidget(QWidget):
             self.florence2_select_combobox.setEnabled(enable)
             self.remote_server_select_combobox.setEnabled(enable)
             self.remote_task_select_combobox.setEnabled(enable)
+            if enable:
+                self.refresh_continuous_run_availability()
+            else:
+                self.button_continuous_run.setEnabled(False)
 
         self.model_manager.prediction_started.connect(
             lambda: set_enable_tools(False)
@@ -353,15 +373,76 @@ class AutoLabelingWidget(QWidget):
         self.populate_florence2_combobox()
         self.populate_gd_combobox()
         self.populate_remote_server_combobox()
+        self.refresh_continuous_run_availability()
 
     def set_auto_labeling_host_context(self, context):
         self.auto_labeling_host_context = validate_auto_labeling_host_context(
             context
         )
+        refresh = getattr(self, "refresh_continuous_run_availability", None)
+        if callable(refresh):
+            refresh()
         return self.auto_labeling_host_context
 
     def clear_auto_labeling_host_context(self):
         self.auto_labeling_host_context = None
+        refresh = getattr(self, "refresh_continuous_run_availability", None)
+        if callable(refresh):
+            refresh()
+
+    def set_images_ready(self, ready):
+        if self.auto_labeling_host_context is not None:
+            self.auto_labeling_host_context.images_ready = bool(ready)
+        refresh = getattr(self, "refresh_continuous_run_availability", None)
+        if callable(refresh):
+            refresh()
+
+    def refresh_continuous_run_availability(self):
+        from anylabeling.views.labeling.utils.auto_labeling_sequence import (
+            resolve_sequence_capabilities,
+        )
+
+        config = getattr(self.model_manager, "loaded_model_config", None)
+        loaded = type(config) is dict and config.get("model") is not None
+        ready = self.auto_labeling_host_context is None or bool(
+            self.auto_labeling_host_context.images_ready
+        )
+        unbound = self.auto_labeling_host_context is None or (
+            self.auto_labeling_host_context.active_run_id is None
+        )
+        active = self._fast_run_session is not None
+        self.button_continuous_run.setEnabled(
+            loaded and ready and unbound and not active
+        )
+        capability = resolve_sequence_capabilities(config)
+        if loaded and not capability.supports_fast_sequence:
+            self.button_continuous_run.setToolTip(
+                self.tr("Legacy Batch：当前模型暂不支持统一快速标注流程")
+            )
+        else:
+            self.button_continuous_run.setToolTip(
+                self.tr("0.0 秒快速批处理，主画布不逐张切换")
+            )
+
+    def run_continuous_auto_labeling(self):
+        from anylabeling.views.labeling.utils.batch import run_all_images
+
+        return run_all_images(self.parent)
+
+    def open_continuous_auto_labeling(self):
+        if self._fast_run_session is not None:
+            self.model_manager.new_model_status.emit(
+                self.tr("连续自动标注已在运行。")
+            )
+            return False
+        from anylabeling.views.labeling.widgets.auto_labeling_run_dialog import (
+            FastRunUiSession,
+        )
+
+        session = FastRunUiSession(self.parent, self)
+        self._fast_run_session = session
+        self.refresh_continuous_run_availability()
+        return session.begin()
 
     def init_model_data(self):
         """Get models data"""
@@ -822,6 +903,7 @@ class AutoLabelingWidget(QWidget):
             self.update_groundingdino_mode_ui()
         elif model_config.get("type") == "remote_server":
             self.update_remote_server_mode_ui()
+        self.refresh_continuous_run_availability()
 
     def update_upn_mode_ui(self):
         """Update UPN mode combobox to reflect current backend state"""

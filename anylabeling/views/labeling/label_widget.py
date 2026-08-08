@@ -4995,6 +4995,13 @@ class LabelingWidget(LabelDialog):
             auto_widget.set_auto_labeling_host_context(context)
         return context
 
+    def set_auto_labeling_images_ready(self, ready):
+        if self.auto_labeling_host_context is not None:
+            self.auto_labeling_host_context.images_ready = bool(ready)
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.set_images_ready(ready)
+
     def clear_auto_labeling_host_context(self):
         context = self.auto_labeling_host_context
         self.auto_labeling_host_context = None
