@@ -41,6 +41,9 @@ from anylabeling.views.labeling.widgets.searchable_model_dropdown import (
     _MODELS_CONFIG_PATH,
     SearchableModelDropdownPopup,
 )
+from anylabeling.views.labeling.utils.auto_labeling_host import (
+    validate_auto_labeling_host_context,
+)
 
 
 class AutoLabelingWidget(QWidget):
@@ -82,6 +85,7 @@ class AutoLabelingWidget(QWidget):
     def __init__(self, parent):
         super().__init__()
         self.parent = parent
+        self.auto_labeling_host_context = None
         current_dir = os.path.dirname(__file__)
         uic.loadUi(os.path.join(current_dir, "auto_labeling.ui"), self)
 
@@ -99,6 +103,7 @@ class AutoLabelingWidget(QWidget):
                 auto_labeling_result
             )
         )
+
         self.model_manager.auto_segmentation_model_selected.connect(
             self.auto_segmentation_requested
         )
@@ -348,6 +353,15 @@ class AutoLabelingWidget(QWidget):
         self.populate_florence2_combobox()
         self.populate_gd_combobox()
         self.populate_remote_server_combobox()
+
+    def set_auto_labeling_host_context(self, context):
+        self.auto_labeling_host_context = validate_auto_labeling_host_context(
+            context
+        )
+        return self.auto_labeling_host_context
+
+    def clear_auto_labeling_host_context(self):
+        self.auto_labeling_host_context = None
 
     def init_model_data(self):
         """Get models data"""

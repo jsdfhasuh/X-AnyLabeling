@@ -51,6 +51,12 @@ from .utils.file_search import (
     matches_filename,
     matches_label_attribute,
 )
+from .utils.auto_labeling_host import (
+    clear_auto_labeling_host_context as clear_global_auto_labeling_host_context,
+    get_auto_labeling_host_context,
+    set_auto_labeling_host_context as set_global_auto_labeling_host_context,
+    validate_auto_labeling_host_context,
+)
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -127,6 +133,7 @@ class LabelingWidget(LabelDialog):
         self.pose_config_path = pose_config_path
         self.pose_config = None
         self.pending_pose_class = None
+        self.auto_labeling_host_context = get_auto_labeling_host_context()
 
         # see configs/anylabeling_config.yaml for valid configuration
         if config is None:
@@ -1950,6 +1957,10 @@ class LabelingWidget(LabelDialog):
         self.label_instruction = QLabel(self.get_labeling_instruction())
         self.label_instruction.setContentsMargins(0, 0, 0, 0)
         self.auto_labeling_widget = AutoLabelingWidget(self)
+        if self.auto_labeling_host_context is not None:
+            self.auto_labeling_widget.set_auto_labeling_host_context(
+                self.auto_labeling_host_context
+            )
         self.auto_labeling_widget.auto_segmentation_requested.connect(
             self.on_auto_segmentation_requested
         )
@@ -4975,6 +4986,23 @@ class LabelingWidget(LabelDialog):
         return w / self.canvas.pixmap.width()
 
     # QT Overload
+    def set_auto_labeling_host_context(self, context):
+        context = validate_auto_labeling_host_context(context)
+        self.auto_labeling_host_context = context
+        set_global_auto_labeling_host_context(context)
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.set_auto_labeling_host_context(context)
+        return context
+
+    def clear_auto_labeling_host_context(self):
+        context = self.auto_labeling_host_context
+        self.auto_labeling_host_context = None
+        clear_global_auto_labeling_host_context(context)
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.clear_auto_labeling_host_context()
+
     def closeEvent(self, event):
         if not self.may_continue():
             event.ignore()
