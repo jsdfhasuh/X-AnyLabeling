@@ -313,6 +313,21 @@ class FastControllerTests(unittest.TestCase):
             items = controller.run_store.list_items(controller.run_id)
             self.assertEqual(items[0]["failure_resolution"], "auto_skip")
 
+    def test_nonzero_success_has_distinct_zero_target_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            _controller, _runner, _manager, summary = self._run(
+                paths,
+                labels,
+                lambda request, _lease: _success(request, target_count=1),
+            )
+
+            self.assertEqual(summary["succeeded"], 1)
+            self.assertEqual(summary["zero_target"], 0)
+            self.assertEqual(summary["pending_review"], 1)
+            self.assertEqual(summary["processing_status"], "COMPLETED")
+            self.assertEqual(summary["review_progress"], "NOT_STARTED")
+
     def test_active_filename_is_reported_before_inference_completes(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths, labels = _images(Path(tmp), 1)
@@ -531,6 +546,15 @@ class FastControllerTests(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: controller.phase == "PAUSED"))
             self.assertEqual(len(calls), 1)
             self.assertTrue(runner.is_idle())
+            self.assertIsNone(controller.active_request)
+            paused_state = controller.run_store.read_state(controller.run_id)
+            self.assertFalse(controller.resume("KEEP_PAUSED"))
+            self.assertEqual(
+                controller.run_store.read_state(controller.run_id),
+                paused_state,
+            )
+            self.assertEqual(controller.phase, "PAUSED")
+            self.assertEqual(len(calls), 1)
             self.assertTrue(controller.resume())
             self.assertTrue(_wait_until(lambda: bool(final)))
             self.assertEqual(len(calls), 2)
@@ -566,6 +590,71 @@ class FastControllerTests(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: bool(final)))
             self.assertEqual(len(calls), 1)
             self.assertEqual(final[0]["processing_status"], "PARTIAL")
+
+    def test_repeated_controls_are_idempotent_and_preserve_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 2)
+            entered = threading.Event()
+            release = threading.Event()
+
+            def execute(request, _lease):
+                entered.set()
+                release.wait(5)
+                return _success(request)
+
+            manager = _Manager()
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            final = []
+            controller.finished.connect(final.append)
+            self.assertTrue(controller.start())
+            self.assertTrue(entered.wait(2))
+
+            self.assertTrue(controller.request_pause())
+            pause_revision = controller.run_store.read_state(
+                controller.run_id
+            )["revision"]
+            self.assertTrue(controller.request_pause())
+            self.assertEqual(
+                controller.run_store.read_state(controller.run_id)["revision"],
+                pause_revision,
+            )
+            self.assertTrue(controller.request_stop())
+            stop_revision = controller.run_store.read_state(controller.run_id)[
+                "revision"
+            ]
+            self.assertTrue(controller.request_stop())
+            self.assertEqual(
+                controller.run_store.read_state(controller.run_id)["revision"],
+                stop_revision,
+            )
+            self.assertFalse(controller.request_pause())
+            self.assertEqual(controller.control_intent, "STOP")
+            self.assertEqual(
+                controller.run_store.read_state(controller.run_id)["revision"],
+                stop_revision,
+            )
+
+            generation = controller.request_close()
+            close_revision = controller.run_store.read_state(
+                controller.run_id
+            )["revision"]
+            self.assertEqual(controller.request_close(), generation)
+            self.assertFalse(controller.request_stop())
+            self.assertFalse(controller.request_pause())
+            self.assertEqual(controller.control_intent, "CLOSE")
+            self.assertEqual(
+                controller.run_store.read_state(controller.run_id)["revision"],
+                close_revision,
+            )
+            release.set()
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
 
     def test_stop_counts_an_existing_annotation_as_a_safe_skip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -637,6 +726,16 @@ class CanvasStateGuardTests(unittest.TestCase):
             def setEnabled(self, enabled):
                 self.enabled = enabled
 
+        class _Control:
+            def __init__(self, enabled=True):
+                self.enabled = enabled
+
+            def isEnabled(self):
+                return self.enabled
+
+            def setEnabled(self, enabled):
+                self.enabled = enabled
+
         image = os.path.abspath("current.jpg")
         record = type(
             "Record",
@@ -669,6 +768,17 @@ class CanvasStateGuardTests(unittest.TestCase):
             },
         )()
         widget.loads = []
+        widget.auto_labeling_widget = _Control()
+        widget.label_list = _Control()
+        widget.actions = type(
+            "Actions",
+            (),
+            {
+                "save": _Control(),
+                "delete": _Control(),
+                "open_next_image": _Control(),
+            },
+        )()
         widget.load_file = widget.loads.append
         widget.set_zoom = widget.zoom_widget.setValue
         widget.open_next_image = mock.Mock()
@@ -679,10 +789,20 @@ class CanvasStateGuardTests(unittest.TestCase):
         self.assertFalse(widget.file_list_widget.enabled)
         self.assertTrue(widget.canvas.sequence_edit_locked)
         self.assertTrue(widget.fast_auto_labeling_edit_locked)
+        self.assertFalse(widget.auto_labeling_widget.enabled)
+        self.assertFalse(widget.label_list.enabled)
+        self.assertFalse(widget.actions.save.enabled)
+        self.assertFalse(widget.actions.delete.enabled)
+        self.assertFalse(widget.actions.open_next_image.enabled)
         guard.set_paused(True)
         self.assertTrue(widget.file_list_widget.enabled)
         self.assertFalse(widget.canvas.sequence_edit_locked)
         self.assertFalse(widget.fast_auto_labeling_edit_locked)
+        self.assertFalse(widget.auto_labeling_widget.enabled)
+        self.assertTrue(widget.label_list.enabled)
+        self.assertTrue(widget.actions.save.enabled)
+        self.assertTrue(widget.actions.delete.enabled)
+        self.assertTrue(widget.actions.open_next_image.enabled)
         guard.restore(set())
         self.assertEqual(widget.loads, [])
         widget.open_next_image.assert_not_called()

@@ -384,7 +384,7 @@ def create_standalone_fast_activation_v1(
     )
 
 
-def build_fast_run_summary_v1(items):
+def build_fast_run_summary_v1(items, state=None):
     items = list(items)
     summary = {
         "workset_total": len(items),
@@ -402,6 +402,7 @@ def build_fast_run_summary_v1(items):
         "pending_review": 0,
         "remaining": 0,
         "processing_status": None,
+        "review_progress": None,
         "completed_with_errors": False,
     }
     for item in items:
@@ -451,7 +452,24 @@ def build_fast_run_summary_v1(items):
             "conflicts",
         )
     )
+    if state is not None:
+        if type(state) is not dict:
+            raise FastControllerError("fast_run_summary_state_invalid")
+        summary["processing_status"] = state.get("processing_status")
+        summary["review_progress"] = state.get("review_progress")
     return summary
+
+
+def read_fast_run_summary_v1(run_store, run_id):
+    """Rebuild one consistent summary from persistent state and item facts."""
+
+    for _attempt in range(3):
+        before = run_store.read_state(run_id)
+        items = run_store.list_items(run_id)
+        after = run_store.read_state(run_id)
+        if before.get("revision") == after.get("revision"):
+            return build_fast_run_summary_v1(items, after)
+    raise FastControllerError("fast_run_summary_snapshot_unstable")
 
 
 class FastAutoLabelingController(QtCore.QObject):
@@ -606,7 +624,9 @@ class FastAutoLabelingController(QtCore.QObject):
         self.queue_entries = list(queue["entries"])
         self.queue_position = 0
         items = self.run_store.list_items(self.run_id)
-        self._live_summary = build_fast_run_summary_v1(items)
+        self._live_summary = build_fast_run_summary_v1(
+            items, self.run_store.read_state(self.run_id)
+        )
         self._item_contributions = {
             item["image_id"]: build_fast_run_summary_v1([item])
             for item in items
@@ -620,7 +640,11 @@ class FastAutoLabelingController(QtCore.QObject):
         current = build_fast_run_summary_v1([item])
         if previous is not None:
             for field, value in current.items():
-                if field in {"processing_status", "completed_with_errors"}:
+                if field in {
+                    "processing_status",
+                    "review_progress",
+                    "completed_with_errors",
+                }:
                     continue
                 if type(value) is int:
                     self._live_summary[field] += value - previous[field]
@@ -977,6 +1001,8 @@ class FastAutoLabelingController(QtCore.QObject):
         record = self.records_by_id.get(image_id)
         image_path = _record_value(record, "canonical_session_image_path")
         summary.update(
+            processing_status=state.get("processing_status"),
+            review_progress=state.get("review_progress"),
             image_id=image_id,
             current_filename=os.path.basename(image_path or ""),
             processed=len(self.queue_entries)
@@ -1034,7 +1060,12 @@ class FastAutoLabelingController(QtCore.QObject):
     def request_pause(self):
         if self._finished:
             return False
+        previous = self.control_intent
         self._raise_intent("PAUSE")
+        if self.control_intent != "PAUSE":
+            return False
+        if previous == "PAUSE":
+            return True
         self.runner.request_pause()
         try:
             self._set_run_state(control_intent=self.control_intent)
@@ -1120,7 +1151,12 @@ class FastAutoLabelingController(QtCore.QObject):
     def request_stop(self):
         if self._finished:
             return False
+        previous = self.control_intent
         self._raise_intent("STOP")
+        if self.control_intent != "STOP":
+            return False
+        if previous == "STOP":
+            return True
         self.runner.request_stop()
         try:
             self._set_run_state(control_intent=self.control_intent)
@@ -1194,21 +1230,22 @@ class FastAutoLabelingController(QtCore.QObject):
             "NOT_STARTED" if summary["pending_review"] else "COMPLETED"
         )
         try:
-            self._set_run_state(
+            final_state = self._set_run_state(
                 processing_status=status,
                 review_progress=review_progress,
                 phase="FINISHED",
                 control_intent=self.control_intent,
                 last_error=self.hard_error,
             )
+            summary = build_fast_run_summary_v1(items, final_state)
         except Exception as exc:
             status = "FAILED"
             self.hard_error = {
                 "code": "final_state_checkpoint_failed",
                 "message": str(exc),
             }
-        summary["processing_status"] = status
-        summary["review_progress"] = review_progress
+            summary["processing_status"] = status
+            summary["review_progress"] = review_progress
         self._finished = True
         self._set_phase("FINISHED")
         with self._registry_lock:

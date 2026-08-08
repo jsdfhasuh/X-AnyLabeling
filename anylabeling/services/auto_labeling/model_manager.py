@@ -1,5 +1,6 @@
 import os
 import copy
+import math
 import time
 import uuid
 import yaml
@@ -37,6 +38,38 @@ from anylabeling.services.auto_labeling import (
     _AUTO_LABELING_PROMPT_MODELS,
     _ON_NEXT_FILES_CHANGED_MODELS,
 )
+
+
+class PredictionParameterSnapshotError(RuntimeError):
+    def __init__(self, code, detail=""):
+        self.code = code
+        self.detail = str(detail or "")
+        super().__init__(code if not self.detail else f"{code}: {self.detail}")
+
+
+def _snapshot_number(parameters, field, *, unit_interval=False):
+    value = parameters.get(field)
+    if value is None:
+        return None
+    if (
+        type(value) not in {int, float}
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or (unit_interval and not 0.0 <= value <= 1.0)
+    ):
+        raise PredictionParameterSnapshotError(
+            "prediction_parameter_snapshot_invalid", field
+        )
+    return float(value)
+
+
+def _snapshot_bool(parameters, field):
+    value = parameters.get(field)
+    if value is not None and type(value) is not bool:
+        raise PredictionParameterSnapshotError(
+            "prediction_parameter_snapshot_invalid", field
+        )
+    return value
 
 
 class ModelManager(QObject):
@@ -2279,6 +2312,7 @@ class ModelManager(QObject):
 
         parameters = request.parameter_snapshot
         try:
+            self._apply_frozen_prediction_parameters(parameters)
             snapshot = decode_image_input_snapshot_v1(
                 image_id=request.image_id,
                 requested_path=request.canonical_image_path,
@@ -2314,7 +2348,10 @@ class ModelManager(QObject):
                 source_image_digest=snapshot.actual_sha256,
             )
             return PredictionOutcome.succeeded(request, payload)
-        except AutoLabelingCommitError as exc:
+        except (
+            AutoLabelingCommitError,
+            PredictionParameterSnapshotError,
+        ) as exc:
             return PredictionOutcome.failed(request, exc.code, str(exc))
         except Exception as exc:  # noqa
             return PredictionOutcome.failed(
@@ -2322,6 +2359,74 @@ class ModelManager(QObject):
                 "model_prediction_failed",
                 str(exc) or type(exc).__name__,
             )
+
+    def _apply_frozen_prediction_parameters(self, parameters):
+        """Apply the Phase 4 request snapshot to the verified model adapter."""
+
+        expected_type = parameters.get("model_type")
+        if expected_type is None:
+            return
+        config = self.loaded_model_config
+        if type(config) is not dict or config.get("model") is None:
+            raise PredictionParameterSnapshotError(
+                "prediction_model_not_loaded"
+            )
+        if config.get("type") != expected_type:
+            raise PredictionParameterSnapshotError(
+                "prediction_model_changed",
+                f"expected {expected_type}, got {config.get('type')}",
+            )
+        model = config["model"]
+
+        for field, attribute in (
+            ("confidence_threshold", "conf_thres"),
+            ("iou_threshold", "iou_thres"),
+            ("keypoint_threshold", "kpt_thres"),
+        ):
+            value = _snapshot_number(parameters, field, unit_interval=True)
+            if value is None:
+                continue
+            setattr(model, attribute, value)
+
+        output_mode = parameters.get("output_mode")
+        if output_mode is not None:
+            if type(output_mode) is not str or not output_mode:
+                raise PredictionParameterSnapshotError(
+                    "prediction_parameter_snapshot_invalid", "output_mode"
+                )
+            output_modes = getattr(
+                getattr(model, "Meta", None), "output_modes", None
+            )
+            if type(output_modes) is dict and output_mode not in output_modes:
+                raise PredictionParameterSnapshotError(
+                    "prediction_parameter_snapshot_invalid", "output_mode"
+                )
+            model.set_output_mode(output_mode)
+
+        preserve = _snapshot_bool(parameters, "preserve_existing_annotations")
+        replace = _snapshot_bool(parameters, "replace")
+        if preserve is not None:
+            intended_replace = not preserve
+            if replace is not None and replace != intended_replace:
+                raise PredictionParameterSnapshotError(
+                    "prediction_parameter_snapshot_invalid",
+                    "preserve_existing_annotations/replace",
+                )
+            replace = intended_replace
+        if replace is not None:
+            model.replace = replace
+
+        _snapshot_bool(parameters, "skip_detection")
+        cropping_mode = _snapshot_bool(parameters, "cropping_mode")
+        mask_fineness = _snapshot_number(parameters, "mask_fineness")
+        if cropping_mode is not None:
+            setter = getattr(model, "set_cropping_mode", None)
+            if callable(setter):
+                setter(cropping_mode)
+        if mask_fineness is not None:
+            setter = getattr(model, "set_mask_fineness", None)
+            if callable(setter):
+                setter(mask_fineness)
 
     def predict_shapes(
         self,

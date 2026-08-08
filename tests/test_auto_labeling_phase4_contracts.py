@@ -32,6 +32,7 @@ from anylabeling.views.labeling.utils.auto_labeling_sequence import (
 from anylabeling.views.labeling.utils.continuous_auto_labeling import (
     FastAutoLabelingController,
     build_fast_run_summary_v1,
+    read_fast_run_summary_v1,
     create_standalone_fast_activation_v1,
     standalone_image_id_v1,
 )
@@ -207,8 +208,14 @@ class FastSequenceContractTests(unittest.TestCase):
         self.assertEqual(snapshot["iou_threshold"], 0.55)
         self.assertEqual(snapshot["keypoint_threshold"], 0.1)
         self.assertTrue(snapshot["preserve_existing_annotations"])
+        self.assertFalse(snapshot["replace"])
         self.assertTrue(snapshot["cropping_mode"])
         self.assertEqual(snapshot["mask_fineness"], 7.0)
+
+        widget.edit_conf._value = 0.9
+        widget.toggle_preserve_existing_annotations._value = False
+        self.assertEqual(snapshot["confidence_threshold"], 0.35)
+        self.assertTrue(snapshot["preserve_existing_annotations"])
 
 
 class StandaloneActivationTests(unittest.TestCase):
@@ -357,7 +364,12 @@ class FastRunSummaryTests(unittest.TestCase):
             self._item("queued"),
         ]
 
-        summary = build_fast_run_summary_v1(items)
+        state = {
+            "revision": 8,
+            "processing_status": "PARTIAL",
+            "review_progress": "NOT_STARTED",
+        }
+        summary = build_fast_run_summary_v1(items, state)
 
         self.assertEqual(summary["workset_total"], 10)
         self.assertEqual(summary["selected_by_range"], 9)
@@ -373,7 +385,16 @@ class FastRunSummaryTests(unittest.TestCase):
         self.assertEqual(summary["conflicts"], 2)
         self.assertEqual(summary["pending_review"], 1)
         self.assertEqual(summary["remaining"], 1)
+        self.assertEqual(summary["processing_status"], "PARTIAL")
+        self.assertEqual(summary["review_progress"], "NOT_STARTED")
         self.assertTrue(summary["completed_with_errors"])
+
+        store = SimpleNamespace(
+            read_state=mock.Mock(return_value=state),
+            list_items=mock.Mock(return_value=items),
+        )
+        self.assertEqual(read_fast_run_summary_v1(store, "run-a"), summary)
+        self.assertEqual(store.read_state.call_count, 2)
 
 
 class FastControllerFailureTests(unittest.TestCase):

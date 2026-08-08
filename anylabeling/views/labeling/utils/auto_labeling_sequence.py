@@ -439,6 +439,7 @@ def build_parameter_snapshot_v1(model_config, auto_widget=None):
             snapshot["iou_threshold"] = float(iou)
         if type(preserve) is bool:
             snapshot["preserve_existing_annotations"] = preserve
+            snapshot["replace"] = not preserve
         if type(skip) is bool:
             snapshot["skip_detection"] = skip
         if type(cropping) is bool:

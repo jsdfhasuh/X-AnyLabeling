@@ -417,6 +417,128 @@ class ModelManagerPhase2Tests(unittest.TestCase):
             runner.dispose_after_idle()
             self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
 
+    def test_fast_request_reapplies_frozen_model_parameters(self):
+        class FrozenModel(_FakeModel):
+            class Meta:
+                output_modes = {
+                    "rectangle": "Rectangle",
+                    "polygon": "Polygon",
+                }
+
+            def __init__(self):
+                super().__init__()
+                self.conf_thres = 0.9
+                self.iou_thres = 0.9
+                self.kpt_thres = 0.9
+                self.output_mode = "polygon"
+                self.replace = True
+                self.observed = []
+
+            def set_output_mode(self, mode):
+                self.output_mode = mode
+
+            def predict_shapes(self, image, filename=None, **kwargs):
+                self.observed.append(
+                    (
+                        self.conf_thres,
+                        self.iou_thres,
+                        self.kpt_thres,
+                        self.output_mode,
+                        self.replace,
+                    )
+                )
+                return AutoLabelingResult([], self.replace, "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "target.png"
+            Image.new("RGB", (2, 3), color=(10, 20, 30)).save(image_path)
+            model = FrozenModel()
+            self.manager.loaded_model_config = {
+                "type": "yolov8_pose",
+                "model": model,
+            }
+            parameters = {
+                "model_type": "yolov8_pose",
+                "confidence_threshold": 0.25,
+                "iou_threshold": 0.45,
+                "keypoint_threshold": 0.1,
+                "output_mode": "rectangle",
+                "preserve_existing_annotations": True,
+                "replace": False,
+                "skip_detection": False,
+                "cropping_mode": None,
+                "mask_fineness": None,
+                "image_input_source": "STANDALONE_FILE_LIST",
+            }
+            token = self.manager.inference_lease.acquire("TEST", "fast-run")
+            try:
+                for index in range(2):
+                    request = PredictionRequest(
+                        run_id="run-a",
+                        job_id=f"job-{index}",
+                        attempt_id=f"attempt-{index}",
+                        image_id=f"image-{index}",
+                        canonical_image_path=os.path.abspath(image_path),
+                        generation=1,
+                        parameter_snapshot=parameters,
+                        existing_shapes_input=[],
+                        delivery_mode="RETURN_ONLY",
+                    )
+                    outcome = self.manager.execute_prediction_request_unleased(
+                        request, token
+                    )
+                    self.assertEqual(outcome.status, "succeeded")
+                    self.assertFalse(outcome.result.replace)
+                    model.conf_thres = 0.99
+                    model.iou_thres = 0.99
+                    model.kpt_thres = 0.99
+                    model.output_mode = "polygon"
+                    model.replace = True
+            finally:
+                token.release()
+
+            self.assertEqual(
+                model.observed,
+                [
+                    (0.25, 0.45, 0.1, "rectangle", False),
+                    (0.25, 0.45, 0.1, "rectangle", False),
+                ],
+            )
+
+    def test_fast_request_rejects_changed_model_before_inference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "target.png"
+            Image.new("RGB", (2, 3)).save(image_path)
+            self.manager.loaded_model_config = {
+                "type": "yolo11",
+                "model": self.model,
+            }
+            request = PredictionRequest(
+                run_id="run-a",
+                job_id="job-a",
+                attempt_id="attempt-a",
+                image_id="image-a",
+                canonical_image_path=os.path.abspath(image_path),
+                generation=1,
+                parameter_snapshot={
+                    "model_type": "yolov8",
+                    "image_input_source": "STANDALONE_FILE_LIST",
+                },
+                existing_shapes_input=[],
+                delivery_mode="RETURN_ONLY",
+            )
+            token = self.manager.inference_lease.acquire("TEST", "fast-run")
+            try:
+                outcome = self.manager.execute_prediction_request_unleased(
+                    request, token
+                )
+            finally:
+                token.release()
+
+            self.assertEqual(outcome.status, "failed")
+            self.assertEqual(outcome.error_code, "prediction_model_changed")
+            self.assertEqual(self.model.calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
