@@ -5465,6 +5465,8 @@ class LabelingWidget(LabelDialog):
         return osp.exists(label_file)
 
     def may_continue(self):
+        if getattr(self, "fast_auto_labeling_edit_locked", False):
+            return False
         if not self.dirty:
             return True
         mb = QtWidgets.QMessageBox

@@ -591,6 +591,148 @@ class FastControllerTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(final[0]["processing_status"], "PARTIAL")
 
+    def test_stop_before_model_failure_suppresses_retry_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 2)
+            entered = threading.Event()
+            release = threading.Event()
+            calls = []
+
+            def execute(request, _lease):
+                calls.append(request.image_id)
+                entered.set()
+                release.wait(5)
+                return PredictionOutcome.failed(
+                    request, "model_prediction_failed", "out of memory"
+                )
+
+            manager = _Manager()
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            waiting = []
+            phases = []
+            final = []
+            controller.waiting_error.connect(waiting.append)
+            controller.state_changed.connect(phases.append)
+            controller.finished.connect(final.append)
+
+            self.assertTrue(controller.start())
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(controller.request_stop())
+            release.set()
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(waiting, [])
+            self.assertNotIn("WAITING_ERROR", phases)
+            self.assertEqual(final[0]["model_failed_unresolved"], 1)
+            self.assertEqual(final[0]["processing_status"], "CANCELLED")
+
+    def test_close_before_model_failure_suppresses_retry_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 2)
+            entered = threading.Event()
+            release = threading.Event()
+
+            def execute(request, _lease):
+                entered.set()
+                release.wait(5)
+                return PredictionOutcome.failed(
+                    request, "model_prediction_failed", "out of memory"
+                )
+
+            manager = _Manager()
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            waiting = []
+            phases = []
+            final = []
+            safe_generations = []
+            controller.waiting_error.connect(waiting.append)
+            controller.state_changed.connect(phases.append)
+            controller.finished.connect(final.append)
+            controller.safe_to_close.connect(safe_generations.append)
+
+            self.assertTrue(controller.start())
+            self.assertTrue(entered.wait(2))
+            generation = controller.request_close()
+            release.set()
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(
+                _wait_until(lambda: generation in safe_generations)
+            )
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+
+            self.assertEqual(waiting, [])
+            self.assertNotIn("WAITING_ERROR", phases)
+            self.assertEqual(final[0]["model_failed_unresolved"], 1)
+            self.assertEqual(final[0]["processing_status"], "CANCELLED")
+
+    def test_pause_with_model_failure_resumes_to_same_waiting_item(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 2)
+            first_entered = threading.Event()
+            first_release = threading.Event()
+            retry_entered = threading.Event()
+            retry_release = threading.Event()
+            calls = []
+
+            def execute(request, _lease):
+                calls.append(request.image_id)
+                if len(calls) == 1:
+                    first_entered.set()
+                    first_release.wait(5)
+                    return PredictionOutcome.failed(
+                        request, "model_prediction_failed", "retry me"
+                    )
+                retry_entered.set()
+                retry_release.wait(5)
+                return _success(request)
+
+            manager = _Manager()
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            waiting = []
+            final = []
+            controller.waiting_error.connect(waiting.append)
+            controller.finished.connect(final.append)
+
+            self.assertTrue(controller.start())
+            self.assertTrue(first_entered.wait(2))
+            first_image_id = calls[0]
+            self.assertTrue(controller.request_pause())
+            first_release.set()
+            self.assertTrue(_wait_until(lambda: controller.phase == "PAUSED"))
+            self.assertEqual(controller.waiting_image_id, first_image_id)
+
+            self.assertTrue(controller.resume())
+            self.assertEqual(controller.phase, "WAITING_ERROR")
+            self.assertEqual(calls, [first_image_id])
+            self.assertEqual(waiting[-1]["image_id"], first_image_id)
+            self.assertTrue(controller.retry_current())
+            self.assertTrue(retry_entered.wait(2))
+            self.assertEqual(calls, [first_image_id, first_image_id])
+            self.assertTrue(controller.request_stop())
+            retry_release.set()
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+
     def test_repeated_controls_are_idempotent_and_preserve_priority(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths, labels = _images(Path(tmp), 2)
@@ -824,6 +966,19 @@ class CanvasStateGuardTests(unittest.TestCase):
         guard.release_for_close()
         self.assertEqual(widget.loads, [])
         self.assertFalse(widget.fast_auto_labeling_active)
+
+    def test_running_interaction_guard_blocks_clean_file_actions(self):
+        from anylabeling.views.labeling.label_widget import LabelingWidget
+
+        widget = type(
+            "Widget",
+            (),
+            {"dirty": False, "fast_auto_labeling_edit_locked": True},
+        )()
+        self.assertFalse(LabelingWidget.may_continue(widget))
+
+        widget.fast_auto_labeling_edit_locked = False
+        self.assertTrue(LabelingWidget.may_continue(widget))
 
 
 def _canonical(path):

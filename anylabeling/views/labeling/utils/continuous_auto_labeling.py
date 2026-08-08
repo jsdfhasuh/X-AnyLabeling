@@ -517,6 +517,7 @@ class FastAutoLabelingController(QtCore.QObject):
         self.phase = "IDLE"
         self.active_request = None
         self.waiting_image_id = None
+        self.waiting_error_details = None
         self.hard_error = None
         self.modified_image_ids = set()
         self._handled_identities = set()
@@ -908,16 +909,26 @@ class FastAutoLabelingController(QtCore.QObject):
         self._finish_attempt(
             request, "model_failed", code, outcome.error_message
         )
+        error = {
+            "image_id": request.image_id,
+            "error_code": code,
+            "error_message": outcome.error_message,
+        }
+        self._emit_progress(request.image_id)
+        if self.control_intent in {"CLOSE", "STOP"}:
+            return
         self.waiting_image_id = request.image_id
+        self.waiting_error_details = error
+        if self.control_intent == "PAUSE":
+            return
+        self._publish_waiting_error()
+
+    def _publish_waiting_error(self):
+        if self.waiting_image_id is None or self.waiting_error_details is None:
+            return
         self._set_run_state(phase="WAITING_ERROR")
         self._set_phase("WAITING_ERROR")
-        self.waiting_error.emit(
-            {
-                "image_id": request.image_id,
-                "error_code": code,
-                "error_message": outcome.error_message,
-            }
-        )
+        self.waiting_error.emit(copy.deepcopy(self.waiting_error_details))
 
     def _finish_attempt(self, request, result, error_code, error_message):
         item = self.run_store.read_item(self.run_id, request.image_id)
@@ -1087,13 +1098,21 @@ class FastAutoLabelingController(QtCore.QObject):
             return False
         self.control_intent = "NONE"
         try:
-            self._set_run_state(
-                processing_status="RUNNING",
-                phase="INFERENCING",
-                control_intent="NONE",
-            )
-            self._set_phase("INFERENCING")
-            self._dispatch_next()
+            if self.waiting_image_id is not None:
+                self._set_run_state(
+                    processing_status="RUNNING",
+                    phase="WAITING_ERROR",
+                    control_intent="NONE",
+                )
+                self._publish_waiting_error()
+            else:
+                self._set_run_state(
+                    processing_status="RUNNING",
+                    phase="INFERENCING",
+                    control_intent="NONE",
+                )
+                self._set_phase("INFERENCING")
+                self._dispatch_next()
         except Exception as exc:  # noqa: B902
             self._hard_fail("control_checkpoint_failed", str(exc))
             return False
@@ -1106,6 +1125,7 @@ class FastAutoLabelingController(QtCore.QObject):
             return False
         image_id = self.waiting_image_id
         self.waiting_image_id = None
+        self.waiting_error_details = None
         try:
             self._set_run_state(phase="INFERENCING")
             self._set_phase("INFERENCING")
@@ -1139,6 +1159,7 @@ class FastAutoLabelingController(QtCore.QObject):
                 )
             )
             self.waiting_image_id = None
+            self.waiting_error_details = None
             self._set_run_state(phase="INFERENCING")
             self._set_phase("INFERENCING")
             self._emit_progress(image_id)

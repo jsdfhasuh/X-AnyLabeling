@@ -254,6 +254,36 @@ class StandaloneActivationTests(unittest.TestCase):
                 "invalid_existing_label",
             )
 
+    def test_structurally_invalid_existing_label_becomes_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths, labels = _images(root, 1)
+            invalid = _valid_empty("image-0000.png")
+            invalid["shapes"] = [
+                {
+                    "label": "invalid",
+                    "points": [],
+                    "shape_type": "rectangle",
+                }
+            ]
+            (labels / "image-0000.json").write_text(
+                json.dumps(invalid), encoding="utf-8"
+            )
+
+            activation = create_standalone_fast_activation_v1(
+                paths,
+                _options(filter="ONLY_WITHOUT_VALID_ANNOTATION"),
+                output_dir=str(labels),
+            )
+            item = activation.run_store.list_items(activation.run_id)[0]
+
+            self.assertEqual(item["execution_status"], "conflict")
+            self.assertEqual(item["failure_resolution"], "unresolved")
+            self.assertEqual(
+                item["result_summary"]["conflict_code"],
+                "invalid_existing_label",
+            )
+
     def test_output_basename_collision_is_rejected_before_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -110,6 +110,10 @@ class FastRunDialogTests(unittest.TestCase):
 
 
 class FastRunRoutingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.qt_app = _app()
+
     @staticmethod
     def _widget(model_type, opener):
         manager = SimpleNamespace(
@@ -142,6 +146,49 @@ class FastRunRoutingTests(unittest.TestCase):
             result = AutoLabelingWidget.run_continuous_auto_labeling(owner)
         self.assertEqual(result, "same-entry")
         routed.assert_called_once_with(widget)
+
+    def test_supported_empty_visible_list_still_uses_fast_entry(self):
+        opener = mock.Mock(return_value="fast")
+        widget = self._widget("yolov8", opener)
+        widget.image_list = []
+        widget.auto_labeling_widget.auto_labeling_host_context = object()
+
+        with mock.patch.object(batch, "run_all_images_legacy") as legacy:
+            self.assertEqual(batch.run_all_images(widget), "fast")
+
+        opener.assert_called_once_with()
+        legacy.assert_not_called()
+
+    def test_final_summary_exposes_every_required_gate_metric(self):
+        dialog = FastRunProgressDialog()
+        summary = {
+            "workset_total": 17,
+            "selected_by_range": 16,
+            "eligible_for_inference": 12,
+            "succeeded": 8,
+            "zero_target": 3,
+            "skipped_existing": 2,
+            "skipped_outside_range": 1,
+            "host_prepare_failed": 1,
+            "failed_input": 1,
+            "model_failed_unresolved": 1,
+            "explicit_error_skips": 1,
+            "conflicts": 1,
+            "pending_review": 8,
+            "remaining": 1,
+            "processing_status": "PARTIAL",
+            "completed_with_errors": True,
+        }
+        try:
+            dialog.finish_run(summary)
+            for field, value in summary.items():
+                with self.subTest(field=field):
+                    self.assertIn(field, dialog.metric_labels)
+                    self.assertEqual(
+                        dialog.metric_labels[field].text(), str(value)
+                    )
+        finally:
+            dialog.close()
 
     def test_legacy_only_model_stays_on_legacy_path(self):
         widget = self._widget("yolov8_det_track", mock.Mock())

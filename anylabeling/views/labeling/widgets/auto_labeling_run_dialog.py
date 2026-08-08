@@ -149,13 +149,22 @@ class FastRunProgressDialog(QtWidgets.QDialog):
     skip_requested = QtCore.pyqtSignal()
 
     _METRICS = (
+        ("workset_total", "workset total"),
+        ("selected_by_range", "selected by range"),
+        ("eligible_for_inference", "eligible for inference"),
         ("succeeded", "succeeded"),
         ("zero_target", "zero target"),
         ("skipped_existing", "skipped existing"),
+        ("skipped_outside_range", "skipped outside range"),
+        ("host_prepare_failed", "host prepare failed"),
         ("failed_input", "failed input"),
+        ("model_failed_unresolved", "unresolved model failures"),
         ("explicit_error_skips", "explicit error skips"),
         ("conflicts", "conflicts"),
+        ("pending_review", "pending review"),
         ("remaining", "remaining"),
+        ("processing_status", "processing status"),
+        ("completed_with_errors", "completed with errors"),
     )
 
     def __init__(self, parent=None):
