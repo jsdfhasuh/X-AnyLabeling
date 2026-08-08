@@ -7,11 +7,26 @@ from PyQt5 import QtGui
 from PyQt5.QtGui import QImage
 
 
+class ImageInputSnapshotPath(str):
+    """Path identity whose image bytes have already been decoded once."""
+
+
 def qt_img_to_rgb_cv_img(qt_img, img_path=None):
     """
     Convert 8bit/16bit RGB image or 8bit/16bit Gray image to 8bit RGB image
     """
-    if img_path is not None and os.path.exists(img_path):
+    if isinstance(img_path, ImageInputSnapshotPath):
+        rgb_image = qt_img.convertToFormat(QImage.Format_RGB888)
+        buffer = rgb_image.bits()
+        buffer.setsize(rgb_image.byteCount())
+        rows = np.frombuffer(buffer, dtype=np.uint8).reshape(
+            rgb_image.height(), rgb_image.bytesPerLine()
+        )
+        cv_image = rows[:, : rgb_image.width() * 3].reshape(
+            rgb_image.height(), rgb_image.width(), 3
+        )
+        cv_image = cv_image.copy()
+    elif img_path is not None and os.path.exists(img_path):
         # Load Image From Path Directly
         # NOTE: Potential issue - unable to handle the flipped image.
         # Temporary workaround: cv_image = cv2.imread(img_path)

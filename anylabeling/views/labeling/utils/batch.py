@@ -280,8 +280,20 @@ def process_next_image(self, progress_dialog, batch=True):
     ]
     total_images = len(self.image_list)
     self._progress_dialog = progress_dialog
+    manager = self.auto_labeling_widget.model_manager
+    acquire_lease = getattr(manager, "acquire_inference_lease", None)
+    if callable(acquire_lease):
+        lease_token = acquire_lease(
+            "LEGACY_AUTO_RUN", f"legacy-auto-run:{id(progress_dialog)}"
+        )
+    else:
+        lease_token = manager.inference_lease.acquire(
+            "LEGACY_AUTO_RUN", f"legacy-auto-run:{id(progress_dialog)}"
+        )
 
     try:
+        if lease_token is None:
+            raise RuntimeError("inference_lease_busy")
         while (self.image_index < total_images) and (
             not self.cancel_processing
         ):
@@ -313,6 +325,7 @@ def process_next_image(self, progress_dialog, batch=True):
                         image_file,
                         text_prompt=self.text_prompt,
                         batch=batch,
+                        lease_token=lease_token,
                     )
                 )
             elif self.run_tracker:
@@ -322,6 +335,7 @@ def process_next_image(self, progress_dialog, batch=True):
                         image_file,
                         run_tracker=self.run_tracker,
                         batch=batch,
+                        lease_token=lease_token,
                     )
                 )
                 if batch_processing_mode == "video":
@@ -342,6 +356,7 @@ def process_next_image(self, progress_dialog, batch=True):
                         image_file,
                         batch=batch,
                         existing_shapes=existing_shapes,
+                        lease_token=lease_token,
                     )
                 )
 
@@ -364,6 +379,10 @@ def process_next_image(self, progress_dialog, batch=True):
             icon=new_icon_path("error", "svg"),
         )
         popup.show_popup(self, position="center")
+    finally:
+        if lease_token is not None:
+            lease_token.release()
+            manager.on_inference_idle()
 
 
 def show_progress_dialog_and_process(self):

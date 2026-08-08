@@ -10,6 +10,10 @@ from PIL import Image
 from PyQt5 import QtWidgets
 
 from anylabeling.views.labeling.utils import batch
+from anylabeling.services.auto_labeling.inference_lease import (
+    InferenceLeaseRegistry,
+)
+from anylabeling.services.auto_labeling.types import AutoLabelingResult
 
 
 class _SerializedShape:
@@ -138,6 +142,60 @@ class LegacyAutoRunBaselineTests(unittest.TestCase):
         self.assertEqual(widget.text_prompt, "")
         self.assertFalse(widget.run_tracker)
         show.assert_called_once_with(widget)
+
+    def test_auto_run_holds_one_lease_for_the_whole_image_loop(self):
+        files = [os.path.abspath(name) for name in ("a.jpg", "b.jpg")]
+        observations = []
+        registry = InferenceLeaseRegistry()
+
+        class _Manager:
+            inference_lease = registry
+            loaded_model_config = {"type": "yolov8", "model": object()}
+
+            def predict_shapes(self, *_args, lease_token=None, **_kwargs):
+                observations.append(
+                    (
+                        lease_token,
+                        registry.snapshot()["generation"],
+                        registry.is_active_token(lease_token),
+                    )
+                )
+                return AutoLabelingResult([], True, "")
+
+            def on_inference_idle(self):
+                pass
+
+        widget = SimpleNamespace(
+            auto_labeling_widget=SimpleNamespace(
+                model_manager=_Manager(),
+                button_skip_detection=SimpleNamespace(isChecked=lambda: False),
+            ),
+            image_list=files,
+            image_index=0,
+            image=object(),
+            text_prompt="",
+            run_tracker=False,
+            cancel_processing=False,
+            tr=lambda text: text,
+        )
+        progress = SimpleNamespace(
+            setValue=lambda _value: None,
+            setLabelText=lambda _text: None,
+            close=lambda: None,
+        )
+
+        with (
+            mock.patch.object(batch.QApplication, "processEvents"),
+            mock.patch.object(batch, "save_auto_labeling_result"),
+            mock.patch.object(batch, "finish_processing"),
+        ):
+            batch.process_next_image(widget, progress)
+
+        self.assertEqual(len(observations), 2)
+        self.assertIs(observations[0][0], observations[1][0])
+        self.assertEqual(observations[0][1], observations[1][1])
+        self.assertTrue(all(item[2] for item in observations))
+        self.assertFalse(registry.is_active)
 
 
 if __name__ == "__main__":
