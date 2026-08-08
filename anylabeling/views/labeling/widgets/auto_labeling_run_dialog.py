@@ -13,6 +13,9 @@ from anylabeling.views.labeling.utils.auto_labeling_commit import (
 from anylabeling.views.labeling.utils.auto_labeling_host import (
     validate_auto_labeling_host_context,
 )
+from anylabeling.views.labeling.utils.auto_labeling_run_store import (
+    build_annotation_commit_event_v1,
+)
 from anylabeling.views.labeling.utils.auto_labeling_sequence import (
     FastRunOptionsV1,
     build_model_fingerprint_v1,
@@ -29,6 +32,12 @@ from anylabeling.views.labeling.utils.continuous_auto_labeling import (
 
 def _canonical(path):
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+def _record_value(record, field):
+    if isinstance(record, dict):
+        return record.get(field)
+    return getattr(record, field, None)
 
 
 class FastRunSetupDialog(QtWidgets.QDialog):
@@ -442,7 +451,7 @@ class FastRunUiSession(QtCore.QObject):
             return standalone_image_id_v1(matches[0])
         record = context.image_records_by_path.get(_canonical(filename))
         return (
-            getattr(record, "image_id", None) if record is not None else None
+            _record_value(record, "image_id") if record is not None else None
         )
 
     @staticmethod
@@ -461,7 +470,7 @@ class FastRunUiSession(QtCore.QObject):
         else:
             records = list(context.image_records_by_path.values())
             label_paths = [
-                getattr(record, "canonical_session_label_path")
+                _record_value(record, "canonical_session_label_path")
                 for record in records
             ]
             private = getattr(context, "_workset_summary", {}) or {}
@@ -496,14 +505,74 @@ class FastRunUiSession(QtCore.QObject):
             self.labeling_widget.save_file()
             if bool(getattr(self.labeling_widget, "dirty", False)):
                 raise FastControllerError("manual_save_failed")
+            try:
+                FastRunUiSession._publish_manual_save_if_bound(self)
+            except Exception:
+                set_dirty = getattr(self.labeling_widget, "set_dirty", None)
+                if callable(set_dirty):
+                    set_dirty()
+                else:
+                    self.labeling_widget.dirty = True
+                raise
             return "SAVED"
         filename = self.labeling_widget.filename
         self.labeling_widget.set_clean()
         if filename is not None and not self.labeling_widget.load_file(
             filename
         ):
+            set_dirty = getattr(self.labeling_widget, "set_dirty", None)
+            if callable(set_dirty):
+                set_dirty()
+            else:
+                self.labeling_widget.dirty = True
             raise FastControllerError("manual_discard_reload_failed")
         return "DISCARDED"
+
+    def _publish_manual_save_if_bound(self):
+        context = getattr(
+            self.auto_widget,
+            "auto_labeling_host_context",
+            None,
+        )
+        if context is None or context.active_run_id is None:
+            return None
+        filename = getattr(self.labeling_widget, "filename", None)
+        if not filename:
+            raise FastControllerError("manual_save_image_identity_missing")
+        record = context.image_records_by_path.get(_canonical(filename))
+        if record is None:
+            raise FastControllerError("manual_save_image_identity_missing")
+        image_id = _record_value(record, "image_id")
+        label_path = _record_value(record, "canonical_session_label_path")
+        label_file = getattr(self.labeling_widget, "label_file", None)
+        saved_path = getattr(label_file, "filename", None)
+        if not saved_path or _canonical(saved_path) != label_path:
+            raise FastControllerError("manual_save_non_authoritative_path")
+        current = resolve_existing_label(label_path)
+        if current.presence not in {"VALID_EMPTY", "VALID_NONEMPTY"}:
+            raise FastControllerError("manual_save_document_unavailable")
+        item = context.run_store.read_item(context.active_run_id, image_id)
+        event = build_annotation_commit_event_v1(
+            project_id=context.project_id,
+            session_id=context.active_session_id,
+            run_id=context.active_run_id,
+            image_id=image_id,
+            attempt_id=item.get("latest_attempt_id"),
+            writer_kind="MANUAL_SAVE",
+            commit_scope="STAGED",
+            mutation_mode="APPLY_MANUAL_REVISION",
+            document_digest=current.document_digest,
+            semantic_digest=current.semantic_digest,
+            source_image_digest=_record_value(
+                record,
+                "source_image_digest",
+            ),
+            base_item_revision=item["item_revision"],
+        )
+        sink = context.annotation_commit_sink
+        if not callable(getattr(sink, "publish", None)):
+            raise FastControllerError("manual_commit_sink_unavailable")
+        return sink.publish(event, label_path=label_path)
 
     def _replace_context(self, context):
         self.labeling_widget.set_auto_labeling_host_context(context)
@@ -527,25 +596,43 @@ class FastRunUiSession(QtCore.QObject):
             self.guard.set_running(True)
 
     def _resume(self):
-        resolution = self._resolve_dirty(self.tr("继续快速标注"))
+        try:
+            resolution = self._resolve_dirty(self.tr("继续快速标注"))
+        except Exception as exc:  # noqa: B902
+            self._show_control_failure(exc)
+            return
         if resolution is None:
             return
         self.progress.clear_waiting_error()
         self.controller.resume(resolution)
 
     def _retry(self):
-        self.progress.clear_waiting_error()
-        self.controller.retry_current()
+        if self.controller.retry_current():
+            self.progress.clear_waiting_error()
 
     def _skip(self):
-        self.progress.clear_waiting_error()
-        self.controller.skip_current()
+        if self.controller.skip_current():
+            self.progress.clear_waiting_error()
 
     def _stop(self):
         if self.controller.phase == "PAUSED":
-            if self._resolve_dirty(self.tr("结束快速标注")) is None:
+            try:
+                resolution = self._resolve_dirty(self.tr("结束快速标注"))
+            except Exception as exc:  # noqa: B902
+                self._show_control_failure(exc)
+                return
+            if resolution is None:
                 return
         self.controller.request_stop()
+
+    def _show_control_failure(self, exc):
+        code = getattr(exc, "code", "manual_save_failed")
+        detail = str(exc)
+        QtWidgets.QMessageBox.warning(
+            self.labeling_widget,
+            self.tr("无法继续快速标注"),
+            f"{code}\n{detail}" if detail != code else code,
+        )
 
     def _on_finished(self, summary):
         if self.controller.control_intent == "CLOSE":

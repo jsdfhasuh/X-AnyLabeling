@@ -4,7 +4,9 @@ import os
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 from PyQt5 import QtCore, QtWidgets
@@ -25,6 +27,9 @@ from anylabeling.views.labeling.utils.auto_labeling_sequence import (
 from anylabeling.views.labeling.utils.continuous_auto_labeling import (
     FastAutoLabelingController,
     FastCanvasStateGuard,
+)
+from anylabeling.views.labeling.utils.auto_labeling_commit import (
+    commit_label_for_image_v1,
 )
 
 
@@ -202,6 +207,7 @@ class FastControllerTests(unittest.TestCase):
             self.assertEqual(summary["processing_status"], "COMPLETED")
             self.assertEqual(summary["skipped_existing"], 2)
             self.assertEqual(summary["pending_review"], 0)
+            self.assertEqual(summary["review_progress"], "COMPLETED")
             self.assertFalse(controller.modified_image_ids)
 
     def test_one_two_and_one_hundred_are_serial_exactly_once(self):
@@ -214,10 +220,12 @@ class FastControllerTests(unittest.TestCase):
                 paths, labels = _images(root, count)
                 calls = []
                 thread_ids = []
+                thread_objects = []
 
                 def execute(request, _lease):
                     calls.append(request.image_id)
                     thread_ids.append(int(QtCore.QThread.currentThreadId()))
+                    thread_objects.append(QtCore.QThread.currentThread())
                     return _success(request)
 
                 controller, runner, manager, summary = self._run(
@@ -226,10 +234,17 @@ class FastControllerTests(unittest.TestCase):
                 self.assertEqual(len(calls), count)
                 self.assertEqual(len(set(calls)), count)
                 self.assertEqual(len(set(thread_ids)), 1)
+                self.assertTrue(
+                    all(
+                        thread is thread_objects[0]
+                        for thread in thread_objects
+                    )
+                )
                 self.assertEqual(summary["succeeded"], count)
                 self.assertEqual(summary["zero_target"], count)
                 self.assertEqual(summary["processing_status"], "COMPLETED")
                 self.assertEqual(summary["pending_review"], count)
+                self.assertEqual(summary["review_progress"], "NOT_STARTED")
                 self.assertEqual(manager.statuses, [])
                 self.assertEqual(
                     runner.completed_attempt_count, min(count, 128)
@@ -242,6 +257,38 @@ class FastControllerTests(unittest.TestCase):
                         )
                     )
                     self.assertEqual(document["shapes"], [])
+
+    def test_each_later_admission_is_observed_only_after_runner_idle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 5)
+            manager = _Manager()
+            runner = PredictionRunner(
+                manager,
+                request_executor=lambda request, _lease: _success(request),
+            )
+            idle_count = [0]
+            admission_idle_counts = []
+            runner.runner_idle.connect(
+                lambda _generation: idle_count.__setitem__(
+                    0,
+                    idle_count[0] + 1,
+                )
+            )
+            runner.request_started.connect(
+                lambda _request: admission_idle_counts.append(idle_count[0])
+            )
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            final = []
+            controller.finished.connect(final.append)
+            self.assertTrue(controller.start())
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+            self.assertEqual(admission_idle_counts, [0, 1, 2, 3, 4])
 
     def test_failed_input_auto_skips_and_continues(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,6 +312,92 @@ class FastControllerTests(unittest.TestCase):
             self.assertEqual(summary["processing_status"], "COMPLETED")
             items = controller.run_store.list_items(controller.run_id)
             self.assertEqual(items[0]["failure_resolution"], "auto_skip")
+
+    def test_active_filename_is_reported_before_inference_completes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            entered = threading.Event()
+            release = threading.Event()
+
+            def execute(request, _lease):
+                entered.set()
+                release.wait(5)
+                return _success(request)
+
+            manager = _Manager()
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            progress = []
+            final = []
+            controller.progress_changed.connect(progress.append)
+            controller.finished.connect(final.append)
+            self.assertTrue(controller.start())
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(progress)
+            self.assertEqual(
+                progress[0]["current_filename"], Path(paths[0]).name
+            )
+            self.assertEqual(progress[0]["processed"], 0)
+            self.assertEqual(progress[0]["total"], 1)
+            self.assertEqual(final, [])
+            release.set()
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+
+    def test_duplicate_and_stale_outcomes_do_not_repeat_commit_or_statistics(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            entered = threading.Event()
+            release = threading.Event()
+            requests = []
+
+            def execute(request, _lease):
+                requests.append(request)
+                entered.set()
+                release.wait(5)
+                return _success(request)
+
+            manager = _Manager()
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            final = []
+            controller.finished.connect(final.append)
+            with mock.patch(
+                "anylabeling.views.labeling.utils.continuous_auto_labeling."
+                "commit_label_for_image_v1",
+                wraps=commit_label_for_image_v1,
+            ) as commit:
+                self.assertTrue(controller.start())
+                self.assertTrue(entered.wait(2))
+                request = requests[0]
+                controller._on_outcome_ready(
+                    _success(
+                        replace(request, generation=request.generation - 1)
+                    )
+                )
+                controller._on_outcome_ready(_success(request))
+                controller._on_outcome_ready(_success(request))
+                self.assertEqual(commit.call_count, 1)
+                release.set()
+                self.assertTrue(_wait_until(lambda: bool(final)))
+                self.assertEqual(commit.call_count, 1)
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+            self.assertEqual(final[0]["succeeded"], 1)
+            self.assertEqual(final[0]["zero_target"], 1)
+            item = controller.run_store.list_items(controller.run_id)[0]
+            self.assertEqual(len(item["prediction_attempts"]), 1)
 
     def test_model_error_retry_uses_new_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -305,6 +438,67 @@ class FastControllerTests(unittest.TestCase):
             self.assertEqual(len(item["prediction_attempts"]), 2)
             self.assertIsNone(item["result_summary"]["error_code"])
             self.assertIsNone(item["result_summary"]["error_message"])
+
+    def test_late_previous_attempt_and_generation_are_ignored_during_retry(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            manager = _Manager()
+            requests = []
+            second_entered = threading.Event()
+            release_second = threading.Event()
+
+            def execute(request, _lease):
+                requests.append(request)
+                if len(requests) == 1:
+                    return PredictionOutcome.failed(
+                        request,
+                        "model_prediction_failed",
+                        "retry me",
+                    )
+                second_entered.set()
+                release_second.wait(5)
+                return _success(request)
+
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            final = []
+            controller.finished.connect(final.append)
+            self.assertTrue(controller.start())
+            self.assertTrue(
+                _wait_until(
+                    lambda: controller.phase == "WAITING_ERROR"
+                    and runner.is_idle()
+                )
+            )
+            self.assertTrue(controller.retry_current())
+            self.assertTrue(second_entered.wait(2))
+
+            controller._on_outcome_ready(_success(requests[0]))
+            controller._on_outcome_ready(
+                _success(
+                    replace(
+                        requests[1],
+                        generation=requests[1].generation - 1,
+                    )
+                )
+            )
+            item = controller.run_store.list_items(controller.run_id)[0]
+            self.assertEqual(item["execution_status"], "running")
+            self.assertEqual(item["latest_attempt_id"], requests[1].attempt_id)
+            self.assertFalse(any(labels.iterdir()))
+
+            release_second.set()
+            self.assertTrue(_wait_until(lambda: bool(final)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+            self.assertEqual(final[0]["succeeded"], 1)
+            self.assertEqual(len(requests), 2)
 
     def test_pause_finishes_current_then_resume_and_stop_is_not_forceful(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -463,18 +657,36 @@ class CanvasStateGuardTests(unittest.TestCase):
             (),
             {"image_records_by_path": {_canonical(image): record}},
         )()
-        widget.canvas = type("Canvas", (), {"selected_shapes": [object()]})()
+        widget.canvas = type(
+            "Canvas",
+            (),
+            {
+                "selected_shapes": [object()],
+                "sequence_edit_locked": False,
+                "set_sequence_edit_locked": lambda self, locked: setattr(
+                    self, "sequence_edit_locked", bool(locked)
+                ),
+            },
+        )()
         widget.loads = []
         widget.load_file = widget.loads.append
         widget.set_zoom = widget.zoom_widget.setValue
+        widget.open_next_image = mock.Mock()
+        widget.import_image_folder = mock.Mock()
 
         guard = FastCanvasStateGuard(widget)
         guard.set_running(True)
         self.assertFalse(widget.file_list_widget.enabled)
+        self.assertTrue(widget.canvas.sequence_edit_locked)
+        self.assertTrue(widget.fast_auto_labeling_edit_locked)
         guard.set_paused(True)
         self.assertTrue(widget.file_list_widget.enabled)
+        self.assertFalse(widget.canvas.sequence_edit_locked)
+        self.assertFalse(widget.fast_auto_labeling_edit_locked)
         guard.restore(set())
         self.assertEqual(widget.loads, [])
+        widget.open_next_image.assert_not_called()
+        widget.import_image_folder.assert_not_called()
 
         guard = FastCanvasStateGuard(widget)
         guard.set_running(True)

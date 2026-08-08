@@ -80,7 +80,19 @@ class FastSequenceContractTests(unittest.TestCase):
         )
 
     def test_positive_capability_registry_excludes_stateful_models(self):
-        for model_type in ("yolov8", "yolov8_pose", "yolo11_pose"):
+        for model_type in (
+            "yolov5",
+            "yolov6",
+            "yolov7",
+            "yolov8",
+            "yolov9",
+            "yolov10",
+            "yolo11",
+            "yolo12",
+            "yolo26",
+            "yolov8_pose",
+            "yolo11_pose",
+        ):
             with self.subTest(model_type=model_type):
                 capability = resolve_sequence_capabilities(
                     {"type": model_type, "model": object()}
@@ -653,6 +665,7 @@ class FastControllerFailureTests(unittest.TestCase):
             controller.request_pause()
             controller.request_stop()
             generation = controller.request_close()
+            self.assertEqual(controller.request_close(), generation)
             controller.request_pause()
             self.assertEqual(controller.control_intent, "CLOSE")
             self.assertEqual(safe, [])

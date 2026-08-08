@@ -1,10 +1,17 @@
+import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from PyQt5 import QtWidgets
 
 from anylabeling.views.labeling.utils import batch
+from anylabeling.views.labeling.utils.continuous_auto_labeling import (
+    FastControllerError,
+)
 from anylabeling.views.labeling.widgets.auto_labeling.auto_labeling import (
     AutoLabelingWidget,
 )
@@ -155,6 +162,7 @@ class FastRunRoutingTests(unittest.TestCase):
         )
         session = SimpleNamespace(
             labeling_widget=widget,
+            auto_widget=SimpleNamespace(auto_labeling_host_context=None),
             tr=lambda value: value,
         )
 
@@ -193,6 +201,141 @@ class FastRunRoutingTests(unittest.TestCase):
             self.assertIsNone(
                 FastRunUiSession._resolve_dirty(session, "resume")
             )
+
+        widget.dirty = True
+        widget.set_dirty = mock.Mock()
+        widget.load_file.return_value = False
+        with (
+            mock.patch.object(
+                QtWidgets.QMessageBox,
+                "question",
+                return_value=QtWidgets.QMessageBox.Discard,
+            ),
+            self.assertRaisesRegex(
+                FastControllerError,
+                "manual_discard_reload_failed",
+            ),
+        ):
+            FastRunUiSession._resolve_dirty(session, "resume")
+        widget.set_dirty.assert_called_once_with()
+
+    def test_paused_save_publishes_manual_commit_and_failure_stays_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image_path = root / "image.png"
+            label_path = root / "image.json"
+            image_path.write_bytes(b"image")
+            record = SimpleNamespace(
+                image_id="image-a",
+                canonical_session_image_path=os.path.normcase(
+                    os.path.realpath(image_path)
+                ),
+                canonical_session_label_path=os.path.normcase(
+                    os.path.realpath(label_path)
+                ),
+                source_image_digest="a" * 64,
+            )
+            sink = SimpleNamespace(publish=mock.Mock(return_value="APPLIED"))
+            store = SimpleNamespace(
+                read_item=mock.Mock(
+                    return_value={
+                        "item_revision": 7,
+                        "latest_attempt_id": "attempt-a",
+                    }
+                )
+            )
+            context = SimpleNamespace(
+                project_id="project-a",
+                active_session_id="session-a",
+                active_run_id="run-a",
+                image_records_by_path={
+                    record.canonical_session_image_path: record
+                },
+                run_store=store,
+                annotation_commit_sink=sink,
+            )
+            widget = SimpleNamespace(
+                dirty=True,
+                filename=str(image_path),
+                label_file=SimpleNamespace(filename=str(label_path)),
+                set_dirty=mock.Mock(),
+            )
+
+            def save():
+                label_path.write_text(
+                    json.dumps(
+                        {
+                            "version": "3.3.7",
+                            "flags": {},
+                            "shapes": [],
+                            "imagePath": "image.png",
+                            "imageData": None,
+                            "imageHeight": 2,
+                            "imageWidth": 2,
+                            "description": "",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                widget.dirty = False
+
+            widget.save_file = mock.Mock(side_effect=save)
+            session = SimpleNamespace(
+                labeling_widget=widget,
+                auto_widget=SimpleNamespace(
+                    auto_labeling_host_context=context
+                ),
+                tr=lambda value: value,
+            )
+            with mock.patch.object(
+                QtWidgets.QMessageBox,
+                "question",
+                return_value=QtWidgets.QMessageBox.Save,
+            ):
+                self.assertEqual(
+                    FastRunUiSession._resolve_dirty(session, "resume"),
+                    "SAVED",
+                )
+            event = sink.publish.call_args.args[0]
+            self.assertEqual(event["writer_kind"], "MANUAL_SAVE")
+            self.assertEqual(event["mutation_mode"], "APPLY_MANUAL_REVISION")
+            self.assertEqual(event["base_item_revision"], 7)
+            self.assertEqual(event["image_id"], "image-a")
+            self.assertEqual(
+                sink.publish.call_args.kwargs["label_path"],
+                record.canonical_session_label_path,
+            )
+
+            widget.dirty = True
+            sink.publish.side_effect = RuntimeError("checkpoint failed")
+            with (
+                mock.patch.object(
+                    QtWidgets.QMessageBox,
+                    "question",
+                    return_value=QtWidgets.QMessageBox.Save,
+                ),
+                self.assertRaisesRegex(RuntimeError, "checkpoint failed"),
+            ):
+                FastRunUiSession._resolve_dirty(session, "resume")
+            widget.set_dirty.assert_called_once_with()
+
+    def test_retry_and_skip_controls_remain_visible_until_runner_idle(self):
+        progress = SimpleNamespace(clear_waiting_error=mock.Mock())
+        controller = SimpleNamespace(
+            retry_current=mock.Mock(return_value=False),
+            skip_current=mock.Mock(return_value=False),
+        )
+        session = SimpleNamespace(progress=progress, controller=controller)
+
+        FastRunUiSession._retry(session)
+        FastRunUiSession._skip(session)
+        progress.clear_waiting_error.assert_not_called()
+
+        controller.retry_current.return_value = True
+        controller.skip_current.return_value = True
+        FastRunUiSession._retry(session)
+        FastRunUiSession._skip(session)
+        self.assertEqual(progress.clear_waiting_error.call_count, 2)
 
 
 if __name__ == "__main__":

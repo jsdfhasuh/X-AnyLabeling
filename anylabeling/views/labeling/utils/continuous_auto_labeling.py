@@ -759,6 +759,10 @@ class FastAutoLabelingController(QtCore.QObject):
         if not self.runner.submit(request):
             self.active_request = None
             self._hard_fail("prediction_submit_rejected", image_id)
+            return
+        # Publish the active filename and total before a long inference ends.
+        # Completion and the next admission still remain gated by runner_idle.
+        self._emit_progress(image_id)
 
     @QtCore.pyqtSlot(object)
     def _on_outcome_ready(self, outcome):

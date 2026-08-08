@@ -185,7 +185,10 @@ class InMemoryCommitStoreV1:
             if image_id not in self._items:
                 return self.create_item(image_id, attempt_id)
             item = self._items[image_id]
-            if item["staged_commit_status"] in {"prepared", "committed"}:
+            if item["staged_commit_status"] == "prepared" or (
+                item["staged_commit_status"] == "committed"
+                and item["execution_status"] == "succeeded"
+            ):
                 raise StoreConflictError("committed item cannot begin attempt")
             item["latest_attempt_id"] = attempt_id
             item["execution_status"] = "running"

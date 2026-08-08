@@ -1092,6 +1092,49 @@ class AnnotationCommitEventSinkTests(unittest.TestCase):
         with self.assertRaisesRegex(StoreConflictError, "stale_commit_event"):
             self.sink.publish(event, label_path=self.label_path)
 
+    def test_new_prediction_attempt_does_not_reuse_manual_commit_checkpoint(
+        self,
+    ):
+        image_path = self.root / "sample.png"
+        Image.new("RGB", (8, 6), color=(20, 30, 40)).save(image_path)
+        _write_json(self.label_path, _document([_shape("manual")]))
+        current = resolve_existing_label(self.label_path)
+        manual = self._manual_event(
+            "MANUAL_SAVE", current.document_digest, current.semantic_digest
+        )
+        self.assertEqual(
+            self.sink.publish(manual, label_path=self.label_path),
+            "APPLIED_MANUAL_REVISION",
+        )
+
+        started = self.store.begin_attempt("image-a", "attempt-b")
+        self.assertEqual(started["execution_status"], "running")
+        result = commit_label_for_image_v1(
+            store=self.store,
+            image_id="image-a",
+            attempt_id="attempt-b",
+            label_path=self.label_path,
+            image_path=image_path,
+            image_height=6,
+            image_width=8,
+            prediction_outcome=_prediction([_shape("predicted")], True),
+            write_policy="FORCE_REPLACE",
+            allowed_root=self.root,
+        )
+
+        self.assertEqual(result.composition.action, "write")
+        self.assertEqual(
+            [
+                shape["label"]
+                for shape in result.write_result.document["shapes"]
+            ],
+            ["predicted"],
+        )
+        self.assertEqual(
+            self.store.read_item("image-a")["execution_status"],
+            "succeeded",
+        )
+
     def test_event_builder_enforces_writer_combination_matrix(self):
         with self.assertRaisesRegex(
             ContractValidationError, "commit_event_writer_combination"

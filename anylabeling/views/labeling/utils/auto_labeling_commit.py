@@ -1011,7 +1011,10 @@ def commit_label_for_image_v1(
     if item["latest_attempt_id"] != attempt_id:
         raise LabelConflictError("stale_attempt")
     existing = resolve_existing_label(label_path)
-    if item["staged_commit_status"] == "committed":
+    if (
+        item["staged_commit_status"] == "committed"
+        and item["execution_status"] == "succeeded"
+    ):
         staged_document_digest = item["digests"]["staged_document_digest"]
         if existing.document_digest != staged_document_digest:
             _mark_conflict(
