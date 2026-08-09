@@ -145,6 +145,7 @@ class LabelFile:
         image_data=None,
         other_data=None,
         flags=None,
+        pre_document_digest=None,
     ):
         if image_data is not None:
             image_data = base64.b64encode(image_data).decode("utf-8")
@@ -188,12 +189,17 @@ class LabelFile:
             data[key] = value
         try:
             current = resolve_existing_label(filename)
-            atomic_write_label_document(
+            if pre_document_digest is None:
+                pre_document_digest = current.document_digest
+            result = atomic_write_label_document(
                 filename,
                 data,
-                pre_document_digest=current.document_digest,
+                pre_document_digest=pre_document_digest,
                 allowed_root=osp.dirname(osp.abspath(filename)),
             )
             self.filename = filename
+            self.document_digest = result.document_digest
+            self.semantic_digest = result.semantic_digest
+            return result
         except Exception as e:  # noqa
             raise LabelFileError(e) from e

@@ -7,14 +7,14 @@ from PyQt5 import QtCore, QtWidgets
 from anylabeling.services.auto_labeling.prediction_runner import (
     PredictionRunner,
 )
-from anylabeling.views.labeling.utils.auto_labeling_commit import (
-    resolve_existing_label,
-)
 from anylabeling.views.labeling.utils.auto_labeling_host import (
     validate_auto_labeling_host_context,
 )
-from anylabeling.views.labeling.utils.auto_labeling_run_store import (
-    build_annotation_commit_event_v1,
+from anylabeling.views.labeling.utils.auto_labeling_audit import (
+    InMemoryStagedAuditClientV1,
+)
+from anylabeling.views.labeling.utils.auto_labeling_commit import (
+    resolve_existing_label,
 )
 from anylabeling.views.labeling.utils.auto_labeling_sequence import (
     FastRunOptionsV1,
@@ -243,6 +243,8 @@ class FastRunProgressDialog(QtWidgets.QDialog):
     stop_requested = QtCore.pyqtSignal()
     retry_requested = QtCore.pyqtSignal()
     skip_requested = QtCore.pyqtSignal()
+    review_now_requested = QtCore.pyqtSignal()
+    review_later_requested = QtCore.pyqtSignal()
 
     _METRICS = (
         ("workset_total", "workset total"),
@@ -327,11 +329,17 @@ class FastRunProgressDialog(QtWidgets.QDialog):
             self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
         )
         self.skip_button = QtWidgets.QPushButton(self.tr("跳过当前图片"))
+        self.review_now_button = QtWidgets.QPushButton(self.tr("立即开始审计"))
+        self.review_later_button = QtWidgets.QPushButton(self.tr("稍后审计"))
         self.retry_button.hide()
         self.skip_button.hide()
+        self.review_now_button.hide()
+        self.review_later_button.hide()
         controls.addWidget(self.pause_button)
         controls.addWidget(self.retry_button)
         controls.addWidget(self.skip_button)
+        controls.addWidget(self.review_later_button)
+        controls.addWidget(self.review_now_button)
         controls.addStretch(1)
         controls.addWidget(self.stop_button)
         layout.addLayout(controls)
@@ -340,6 +348,8 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.stop_button.clicked.connect(self.stop_requested)
         self.retry_button.clicked.connect(self.retry_requested)
         self.skip_button.clicked.connect(self.skip_requested)
+        self.review_now_button.clicked.connect(self.review_now_requested)
+        self.review_later_button.clicked.connect(self.review_later_requested)
 
     def _toggle_pause(self):
         if self._paused:
@@ -435,6 +445,9 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         except TypeError:
             pass
         self.stop_button.clicked.connect(self.accept)
+        if int(summary.get("pending_review", 0)) > 0:
+            self.review_now_button.show()
+            self.review_later_button.show()
 
     def closeEvent(self, event):
         if self._terminal:
@@ -463,6 +476,9 @@ class FastRunUiSession(QtCore.QObject):
         self.guard = None
         self.presenter = None
         self._thread_cleanup_connected = False
+        self._pending_review_action = None
+        self._review_choice_finalized = False
+        self._audit_client = None
 
     def begin(self):
         try:
@@ -648,6 +664,22 @@ class FastRunUiSession(QtCore.QObject):
         }
 
     def _resolve_dirty(self, title):
+        if bool(
+            getattr(
+                self.labeling_widget,
+                "auto_labeling_commit_blocked",
+                False,
+            )
+        ):
+            self.labeling_widget.annotation_commit_bridge.integrity_refresh()
+            if bool(
+                getattr(
+                    self.labeling_widget,
+                    "auto_labeling_commit_blocked",
+                    False,
+                )
+            ):
+                raise FastControllerError("manual_commit_recovery_failed")
         if not bool(getattr(self.labeling_widget, "dirty", False)):
             return "CLEAN"
         answer = QtWidgets.QMessageBox.question(
@@ -662,18 +694,19 @@ class FastRunUiSession(QtCore.QObject):
         if answer == QtWidgets.QMessageBox.Cancel:
             return None
         if answer == QtWidgets.QMessageBox.Save:
-            self.labeling_widget.save_file()
-            if bool(getattr(self.labeling_widget, "dirty", False)):
+            saved = self.labeling_widget.save_file()
+            if (
+                saved is False
+                or bool(getattr(self.labeling_widget, "dirty", False))
+                or bool(
+                    getattr(
+                        self.labeling_widget,
+                        "auto_labeling_commit_blocked",
+                        False,
+                    )
+                )
+            ):
                 raise FastControllerError("manual_save_failed")
-            try:
-                FastRunUiSession._publish_manual_save_if_bound(self)
-            except Exception:
-                set_dirty = getattr(self.labeling_widget, "set_dirty", None)
-                if callable(set_dirty):
-                    set_dirty()
-                else:
-                    self.labeling_widget.dirty = True
-                raise
             return "SAVED"
         filename = self.labeling_widget.filename
         self.labeling_widget.set_clean()
@@ -688,52 +721,6 @@ class FastRunUiSession(QtCore.QObject):
             raise FastControllerError("manual_discard_reload_failed")
         return "DISCARDED"
 
-    def _publish_manual_save_if_bound(self):
-        context = getattr(
-            self.auto_widget,
-            "auto_labeling_host_context",
-            None,
-        )
-        if context is None or context.active_run_id is None:
-            return None
-        filename = getattr(self.labeling_widget, "filename", None)
-        if not filename:
-            raise FastControllerError("manual_save_image_identity_missing")
-        record = context.image_records_by_path.get(_canonical(filename))
-        if record is None:
-            raise FastControllerError("manual_save_image_identity_missing")
-        image_id = _record_value(record, "image_id")
-        label_path = _record_value(record, "canonical_session_label_path")
-        label_file = getattr(self.labeling_widget, "label_file", None)
-        saved_path = getattr(label_file, "filename", None)
-        if not saved_path or _canonical(saved_path) != label_path:
-            raise FastControllerError("manual_save_non_authoritative_path")
-        current = resolve_existing_label(label_path)
-        if current.presence not in {"VALID_EMPTY", "VALID_NONEMPTY"}:
-            raise FastControllerError("manual_save_document_unavailable")
-        item = context.run_store.read_item(context.active_run_id, image_id)
-        event = build_annotation_commit_event_v1(
-            project_id=context.project_id,
-            session_id=context.active_session_id,
-            run_id=context.active_run_id,
-            image_id=image_id,
-            attempt_id=item.get("latest_attempt_id"),
-            writer_kind="MANUAL_SAVE",
-            commit_scope="STAGED",
-            mutation_mode="APPLY_MANUAL_REVISION",
-            document_digest=current.document_digest,
-            semantic_digest=current.semantic_digest,
-            source_image_digest=_record_value(
-                record,
-                "source_image_digest",
-            ),
-            base_item_revision=item["item_revision"],
-        )
-        sink = context.annotation_commit_sink
-        if not callable(getattr(sink, "publish", None)):
-            raise FastControllerError("manual_commit_sink_unavailable")
-        return sink.publish(event, label_path=label_path)
-
     def _replace_context(self, context):
         self.labeling_widget.set_auto_labeling_host_context(context)
 
@@ -747,6 +734,8 @@ class FastRunUiSession(QtCore.QObject):
         self.progress.stop_requested.connect(self._stop)
         self.progress.retry_requested.connect(self._retry)
         self.progress.skip_requested.connect(self._skip)
+        self.progress.review_now_requested.connect(self._review_now)
+        self.progress.review_later_requested.connect(self._review_later)
 
     def _on_phase_changed(self, phase):
         self.progress.set_phase(phase)
@@ -807,11 +796,57 @@ class FastRunUiSession(QtCore.QObject):
         else:
             self.guard.restore(self.controller.modified_image_ids)
         self._reset_entry_action()
+        self._prepare_audit_client(summary)
         self.progress.finish_run(summary)
         self.auto_widget.refresh_continuous_run_availability()
         self._connect_thread_cleanup()
         if not self.controller.requires_safe_shutdown():
             self._cleanup()
+
+    def _prepare_audit_client(self, summary):
+        if int(summary.get("pending_review", 0)) <= 0:
+            return None
+        context = getattr(self.controller, "host_context", None)
+        if context is not None:
+            self._audit_client = getattr(context, "staged_audit_client", None)
+            return self._audit_client
+        self._audit_client = InMemoryStagedAuditClientV1(
+            run_store=self.controller.run_store,
+            run_id=self.controller.run_id,
+            records_by_id=self.controller.records_by_id,
+            commit_store=self.controller.commit_store,
+        )
+        self.labeling_widget._standalone_auto_labeling_audit_client = (
+            self._audit_client
+        )
+        return self._audit_client
+
+    def _review_now(self):
+        if self._audit_client is None or self._review_choice_finalized:
+            return False
+        self._review_choice_finalized = True
+        self._pending_review_action = "IMMEDIATE"
+        self.progress.accept()
+        thread = self.runner.worker_thread if self.runner is not None else None
+        if thread is None or not thread.isRunning():
+            return self._start_pending_review()
+        return True
+
+    def _review_later(self):
+        if self._review_choice_finalized:
+            return False
+        self._review_choice_finalized = True
+        self._pending_review_action = None
+        self.progress.accept()
+        return True
+
+    def _start_pending_review(self):
+        if self._pending_review_action != "IMMEDIATE":
+            return False
+        self._pending_review_action = None
+        return self.labeling_widget.start_auto_labeling_review(
+            self._audit_client
+        )
 
     def _connect_thread_cleanup(self):
         thread = self.runner.worker_thread if self.runner is not None else None
@@ -858,6 +893,7 @@ class FastRunUiSession(QtCore.QObject):
         if getattr(self.auto_widget, "_fast_run_session", None) is self:
             self.auto_widget._fast_run_session = None
         self.auto_widget.refresh_continuous_run_availability()
+        self._start_pending_review()
 
 
 ContinuousRunProgressDialog = FastRunProgressDialog

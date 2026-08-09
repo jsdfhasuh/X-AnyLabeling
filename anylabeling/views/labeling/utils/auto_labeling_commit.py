@@ -841,6 +841,41 @@ def atomic_write_label_document(
         )
 
 
+def atomic_delete_label_document(
+    label_path,
+    *,
+    pre_document_digest,
+    allowed_root=None,
+):
+    """Delete one authoritative label under the shared per-path CAS mutex."""
+
+    path = os.path.abspath(os.fspath(label_path))
+    validate_document_digest_v1(pre_document_digest, allow_missing=True)
+    if allowed_root is not None:
+        root = canonical_path_identity(os.fspath(allowed_root))
+        identity = canonical_path_identity(path)
+        if not _within_root(identity, root):
+            raise LabelConflictError("conflict_output_path_escape", path)
+    with _label_mutex(path):
+        current = resolve_existing_label(path)
+        if current.presence == ANNOTATION_PRESENCE_INVALID:
+            raise LabelConflictError("invalid_existing_label", path)
+        if current.document_digest != pre_document_digest:
+            raise LabelConflictError("conflict_pre_document_digest", path)
+        if current.presence == ANNOTATION_PRESENCE_MISSING:
+            return current
+        if not os.path.isfile(path) or os.path.islink(path):
+            raise LabelConflictError("conflict_output_not_regular_file", path)
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            raise LabelWriteError("label_delete_failed", exc) from exc
+        reread = resolve_existing_label(path)
+        if reread.presence != ANNOTATION_PRESENCE_MISSING:
+            raise LabelWriteError("post_delete_verification_failed")
+        return reread
+
+
 def _reject_session_symlink_components(path, root):
     requested = os.path.abspath(path)
     root_path = os.path.abspath(root)

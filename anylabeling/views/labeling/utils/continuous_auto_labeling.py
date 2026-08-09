@@ -119,10 +119,17 @@ def _new_fast_item(run_id, image_id, sequence, now):
             "intended_semantic_digest": None,
             "staged_document_digest": None,
             "staged_annotation_digest": None,
+            "source_image_digest": None,
+            "reviewed_annotation_digest": None,
+            "reviewed_image_digest": None,
         },
         "result_summary": _empty_result_summary(),
         "error": None,
         "conflict": None,
+        "last_commit_event_id": None,
+        "recent_commit_event_ids": [],
+        "last_audit_decision_id": None,
+        "audit_decisions": [],
         "created_at": now,
         "updated_at": now,
     }
@@ -1273,7 +1280,10 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                 source_image_digest=payload.source_image_digest,
             )
             if isinstance(self.commit_store, InMemoryCommitStoreV1):
-                self._sync_standalone_commit(request.image_id)
+                self._sync_standalone_commit(
+                    request.image_id,
+                    source_image_digest=payload.source_image_digest,
+                )
             committed_item = self._finish_attempt(
                 request, "succeeded", None, None
             )
@@ -1547,11 +1557,13 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             )
         )
 
-    def _sync_standalone_commit(self, image_id):
+    def _sync_standalone_commit(self, image_id, source_image_digest=None):
         source = self.commit_store.read_item(image_id)
         target = self.run_store.read_item(self.run_id, image_id)
         digests = copy.deepcopy(target["digests"])
         digests.update(source["digests"])
+        if source_image_digest is not None:
+            digests["source_image_digest"] = source_image_digest
         summary = copy.deepcopy(target["result_summary"])
         summary.update(source["result_summary"])
         self._track_item(
@@ -1569,6 +1581,10 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                     "digests": digests,
                     "result_summary": summary,
                     "conflict": copy.deepcopy(source["conflict"]),
+                    "last_commit_event_id": source.get("last_commit_event_id"),
+                    "recent_commit_event_ids": copy.deepcopy(
+                        source.get("recent_commit_event_ids", [])
+                    ),
                 },
             )
         )

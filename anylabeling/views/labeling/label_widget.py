@@ -57,6 +57,10 @@ from .utils.auto_labeling_host import (
     set_auto_labeling_host_context as set_global_auto_labeling_host_context,
     validate_auto_labeling_host_context,
 )
+from .utils.auto_labeling_commit_bridge import (
+    AnnotationCommitBridgeError,
+    AnnotationCommitBridgeV1,
+)
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -171,6 +175,13 @@ class LabelingWidget(LabelDialog):
 
         # Whether we need to save or not.
         self.dirty = False
+        self._loaded_label_path = None
+        self._loaded_label_document_digest = None
+        self.auto_labeling_commit_blocked = False
+        self.auto_labeling_commit_error = None
+        self._standalone_auto_labeling_audit_client = None
+        self._auto_labeling_audit_session = None
+        self.annotation_commit_bridge = AnnotationCommitBridgeV1(self)
 
         self._no_selection_slot = False
         self._copied_shapes = None
@@ -2546,7 +2557,11 @@ class LabelingWidget(LabelDialog):
             if self.output_dir:
                 label_file_without_path = osp.basename(label_file)
                 label_file = self.output_dir + "/" + label_file_without_path
-            self.save_labels(label_file)
+            if self.save_labels(label_file, writer_kind="AUTO_SAVE"):
+                self.set_clean()
+            else:
+                self.dirty = True
+                self.actions.save.setEnabled(True)
             if (
                 hasattr(self, "navigator_dialog")
                 and self.navigator_dialog.isVisible()
@@ -2635,6 +2650,8 @@ class LabelingWidget(LabelDialog):
         self.image_data = None
         self.label_file = None
         self.other_data = {}
+        self._loaded_label_path = None
+        self._loaded_label_document_digest = None
         self.canvas.reset_state()
         self.compare_view_manager.reset()
         self.label_filter_combobox.text_box.clear()
@@ -3790,8 +3807,16 @@ class LabelingWidget(LabelDialog):
                 image_width=self.image.width(),
                 other_data=self.other_data,
                 flags=flags,
+                pre_document_digest=(
+                    self.annotation_commit_bridge.pre_document_digest(filename)
+                ),
             )
             self.label_file = label_file
+            self.annotation_commit_bridge.publish_saved_label(
+                "MANUAL_SAVE",
+                self.filename,
+                filename,
+            )
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchExactly
             )
@@ -3802,6 +3827,13 @@ class LabelingWidget(LabelDialog):
             # disable allows next and previous image to proceed
             # self.filename = filename
             return True
+        except AnnotationCommitBridgeError as exc:
+            self.dirty = True
+            self.error_message(
+                self.tr("Annotation integrity refresh required"),
+                self.tr("<b>%s</b>") % exc,
+            )
+            return False
         except LabelFileError as e:
             self.error_message(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
@@ -4024,7 +4056,7 @@ class LabelingWidget(LabelDialog):
         unique_gid_list.sort()
         self.gid_filter_combobox.update_items(unique_gid_list)
 
-    def save_labels(self, filename):
+    def save_labels(self, filename, writer_kind="MANUAL_SAVE"):
         label_file = LabelFile()
         # Get current shapes
         # Excluding auto labeling special shapes
@@ -4061,8 +4093,16 @@ class LabelingWidget(LabelDialog):
                 image_width=self.image.width(),
                 other_data=self.other_data,
                 flags=flags,
+                pre_document_digest=(
+                    self.annotation_commit_bridge.pre_document_digest(filename)
+                ),
             )
             self.label_file = label_file
+            self.annotation_commit_bridge.publish_saved_label(
+                writer_kind,
+                self.filename,
+                filename,
+            )
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchExactly
             )
@@ -4073,6 +4113,13 @@ class LabelingWidget(LabelDialog):
             # disable allows next and previous image to proceed
             # self.filename = filename
             return True
+        except AnnotationCommitBridgeError as exc:
+            self.dirty = True
+            self.error_message(
+                self.tr("Annotation integrity refresh required"),
+                self.tr("<b>%s</b>") % exc,
+            )
+            return False
         except LabelFileError as e:
             self.error_message(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
@@ -4876,6 +4923,7 @@ class LabelingWidget(LabelDialog):
             if self.label_file.flags is not None:
                 flags.update(self.label_file.flags)
         self.load_flags(flags)
+        self.annotation_commit_bridge.record_loaded_label(label_file)
 
         # load shapes
         if self._config["keep_prev"] and self.no_shape():
@@ -4994,6 +5042,30 @@ class LabelingWidget(LabelDialog):
         if auto_widget is not None:
             auto_widget.set_auto_labeling_host_context(context)
         return context
+
+    def start_auto_labeling_review(self, client=None):
+        """Open staged review without loading a model or creating a run."""
+
+        if self._auto_labeling_audit_session is not None:
+            return False
+        if client is None and self.auto_labeling_host_context is not None:
+            client = getattr(
+                self.auto_labeling_host_context,
+                "staged_audit_client",
+                None,
+            )
+        if client is None:
+            client = self._standalone_auto_labeling_audit_client
+        if client is None:
+            return False
+        from .widgets.auto_labeling_audit_dialog import StagedAuditUiSession
+
+        session = StagedAuditUiSession(self, client)
+        self._auto_labeling_audit_session = session
+        if session.begin():
+            return True
+        self._auto_labeling_audit_session = None
+        return False
 
     def set_auto_labeling_images_ready(self, ready):
         if self.auto_labeling_host_context is not None:
@@ -5269,6 +5341,8 @@ class LabelingWidget(LabelDialog):
                 break
 
     def open_prev_image(self, _value=False):
+        if getattr(self, "auto_labeling_audit_active", False):
+            return False
         if not self.may_continue():
             return
 
@@ -5285,6 +5359,8 @@ class LabelingWidget(LabelDialog):
                 self.load_file(filename)
 
     def open_next_image(self, _value=False, load=True):
+        if getattr(self, "auto_labeling_audit_active", False):
+            return False
         if not self.may_continue():
             return
 
@@ -5333,6 +5409,15 @@ class LabelingWidget(LabelDialog):
                 self.load_file(filename)
 
     def change_output_dir_dialog(self, _value=False):
+        if getattr(self, "auto_labeling_audit_active", False) or (
+            self.auto_labeling_host_context is not None
+            and getattr(
+                self.auto_labeling_host_context,
+                "active_run_id",
+                None,
+            )
+        ):
+            return False
         default_output_dir = self.output_dir
         if default_output_dir is None and self.filename:
             default_output_dir = osp.dirname(self.filename)
@@ -5371,18 +5456,51 @@ class LabelingWidget(LabelDialog):
 
     def save_file(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
+        if getattr(self, "auto_labeling_commit_blocked", False):
+            try:
+                self.annotation_commit_bridge.integrity_refresh()
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    self.tr("Annotation integrity refresh required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
+        try:
+            authoritative_label = (
+                self.annotation_commit_bridge.authoritative_label_path(
+                    self.filename
+                )
+            )
+        except AnnotationCommitBridgeError as exc:
+            self.error_message(
+                self.tr("Annotation integrity refresh required"),
+                self.tr("<b>%s</b>") % exc,
+            )
+            return False
+        if authoritative_label is not None:
+            return self._save_file(authoritative_label)
         if self.label_file:
             # DL20180323 - overwrite when in directory
-            self._save_file(self.label_file.filename)
+            return self._save_file(self.label_file.filename)
         elif self.output_file:
-            self._save_file(self.output_file)
-            self.close()
-        else:
-            self._save_file(self.save_file_dialog())
+            saved = self._save_file(self.output_file)
+            if saved:
+                self.close()
+            return saved
+        return self._save_file(self.save_file_dialog())
 
     def save_file_as(self, _value=False):
+        if getattr(self, "auto_labeling_audit_active", False) or (
+            self.auto_labeling_host_context is not None
+            and getattr(
+                self.auto_labeling_host_context,
+                "active_run_id",
+                None,
+            )
+        ):
+            return False
         assert not self.image.isNull(), "cannot save empty image"
-        self._save_file(self.save_file_dialog())
+        return self._save_file(self.save_file_dialog())
 
     def save_file_dialog(self):
         caption = self.tr("%s - Choose File") % __appname__
@@ -5424,6 +5542,8 @@ class LabelingWidget(LabelDialog):
         if filename and self.save_labels(filename):
             self.add_recent_file(filename)
             self.set_clean()
+            return True
+        return False
 
     def close_file(self, _value=False):
         if not self.may_continue():
@@ -5514,11 +5634,35 @@ class LabelingWidget(LabelDialog):
         )
         answer = mb.warning(self, self.tr("Attention"), msg, mb.Yes | mb.No)
         if answer != mb.Yes:
-            return
+            return False
 
         label_file = self.get_label_file()
+        recovered_pending = False
+        if getattr(self, "auto_labeling_commit_blocked", False):
+            try:
+                self.annotation_commit_bridge.integrity_refresh()
+                recovered_pending = True
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    self.tr("Annotation integrity refresh required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
         if osp.exists(label_file):
-            os.remove(label_file)
+            try:
+                self.annotation_commit_bridge.delete_label(
+                    self.filename,
+                    label_file,
+                )
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    self.tr("Annotation integrity refresh required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
+        elif not recovered_pending:
+            return False
+        if not osp.exists(label_file):
             logger.info(f"Label file is removed: {label_file}")
 
             item = self.file_list_widget.currentItem()
@@ -5529,8 +5673,19 @@ class LabelingWidget(LabelDialog):
             self.filename = filename
             if self.filename:
                 self.load_file(self.filename)
+            return True
+        return False
 
     def delete_image_file(self):
+        if getattr(self, "auto_labeling_audit_active", False) or (
+            self.auto_labeling_host_context is not None
+            and getattr(
+                self.auto_labeling_host_context,
+                "active_run_id",
+                None,
+            )
+        ):
+            return False
         if len(self.image_list) < 2:
             return
 
@@ -5613,6 +5768,15 @@ class LabelingWidget(LabelDialog):
     def may_continue(self):
         if getattr(self, "fast_auto_labeling_edit_locked", False):
             return False
+        if getattr(self, "auto_labeling_commit_blocked", False):
+            try:
+                self.annotation_commit_bridge.integrity_refresh()
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    self.tr("Annotation integrity refresh required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
         if not self.dirty:
             return True
         mb = QtWidgets.QMessageBox
@@ -5629,8 +5793,10 @@ class LabelingWidget(LabelDialog):
         if answer == mb.Discard:
             return True
         if answer == mb.Save:
-            self.save_file()
-            return True
+            return (
+                bool(self.save_file())
+                and not self.auto_labeling_commit_blocked
+            )
         # answer == mb.Cancel
         return False
 

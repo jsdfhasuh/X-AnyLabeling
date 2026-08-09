@@ -164,6 +164,9 @@ class InMemoryCommitStoreV1:
                     "intended_semantic_digest": None,
                     "staged_document_digest": None,
                     "staged_annotation_digest": None,
+                    "source_image_digest": None,
+                    "reviewed_annotation_digest": None,
+                    "reviewed_image_digest": None,
                 },
                 "result_summary": {
                     "target_count": None,
@@ -173,6 +176,8 @@ class InMemoryCommitStoreV1:
                 },
                 "last_commit_event_id": None,
                 "recent_commit_event_ids": [],
+                "last_audit_decision_id": None,
+                "audit_decisions": [],
                 "conflict": None,
             }
             self._items[image_id] = item
@@ -406,6 +411,9 @@ class InMemoryCommitStoreV1:
             ):
                 raise StoreConflictError("continuous event digest mismatch")
             self._continuous_events[event_id] = copy.deepcopy(event)
+            item["digests"]["source_image_digest"] = event[
+                "source_image_digest"
+            ]
             self._append_event_id(item, event_id)
             self._advance(item)
             return "NOTIFIED"
@@ -425,11 +433,13 @@ class InMemoryCommitStoreV1:
             item = self._items.get(event["image_id"])
             if item is None:
                 raise StoreConflictError("unknown image_id")
+            old_document_digest = item["digests"]["staged_document_digest"]
+            old_semantic_digest = item["digests"]["staged_annotation_digest"]
+            old_image_digest = item["digests"].get("source_image_digest")
             if (
-                item["digests"]["staged_document_digest"]
-                == event["document_digest"]
-                and item["digests"]["staged_annotation_digest"]
-                == event["semantic_digest"]
+                old_document_digest == event["document_digest"]
+                and old_semantic_digest == event["semantic_digest"]
+                and old_image_digest == event["source_image_digest"]
             ):
                 self._manual_events[event_id] = copy.deepcopy(event)
                 self._append_event_id(item, event_id)
@@ -443,11 +453,24 @@ class InMemoryCommitStoreV1:
             item["digests"]["staged_annotation_digest"] = event[
                 "semantic_digest"
             ]
-            item["review_status"] = (
-                "stale"
-                if item["review_status"] in {"staged_approved", "approved"}
-                else "pending"
+            item["digests"]["source_image_digest"] = event[
+                "source_image_digest"
+            ]
+            semantic_changed = old_semantic_digest != event["semantic_digest"]
+            image_changed = (
+                old_image_digest is not None
+                and event["source_image_digest"] is not None
+                and old_image_digest != event["source_image_digest"]
             )
+            review_status = item["review_status"]
+            if review_status in {"staged_approved", "approved"} and (
+                semantic_changed or image_changed
+            ):
+                item["review_status"] = "stale"
+            elif review_status == "needs_fix" and semantic_changed:
+                item["review_status"] = "pending"
+            elif review_status == "not_applicable":
+                item["review_status"] = "pending"
             self._manual_events[event_id] = copy.deepcopy(event)
             self._append_event_id(item, event_id)
             self._advance(item)

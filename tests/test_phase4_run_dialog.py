@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from anylabeling.views.labeling.utils import batch
 from anylabeling.views.labeling.utils.continuous_auto_labeling import (
@@ -24,6 +24,17 @@ from anylabeling.views.labeling.widgets.auto_labeling_run_dialog import (
 
 def _app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+class _ReviewWorkerThread(QtCore.QObject):
+    finished = QtCore.pyqtSignal()
+
+    def __init__(self, running):
+        super().__init__()
+        self.running = running
+
+    def isRunning(self):
+        return self.running
 
 
 class FastRunDialogTests(unittest.TestCase):
@@ -267,7 +278,7 @@ class FastRunRoutingTests(unittest.TestCase):
             FastRunUiSession._resolve_dirty(session, "resume")
         widget.set_dirty.assert_called_once_with()
 
-    def test_paused_save_publishes_manual_commit_and_failure_stays_dirty(self):
+    def test_paused_save_uses_unified_commit_bridge_exactly_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             image_path = root / "image.png"
@@ -309,6 +320,13 @@ class FastRunRoutingTests(unittest.TestCase):
                 set_dirty=mock.Mock(),
             )
 
+            event = {
+                "writer_kind": "MANUAL_SAVE",
+                "mutation_mode": "APPLY_MANUAL_REVISION",
+                "base_item_revision": 7,
+                "image_id": "image-a",
+            }
+
             def save():
                 label_path.write_text(
                     json.dumps(
@@ -325,7 +343,12 @@ class FastRunRoutingTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
+                sink.publish(
+                    event,
+                    label_path=record.canonical_session_label_path,
+                )
                 widget.dirty = False
+                return True
 
             widget.save_file = mock.Mock(side_effect=save)
             session = SimpleNamespace(
@@ -344,28 +367,91 @@ class FastRunRoutingTests(unittest.TestCase):
                     FastRunUiSession._resolve_dirty(session, "resume"),
                     "SAVED",
                 )
-            event = sink.publish.call_args.args[0]
-            self.assertEqual(event["writer_kind"], "MANUAL_SAVE")
-            self.assertEqual(event["mutation_mode"], "APPLY_MANUAL_REVISION")
-            self.assertEqual(event["base_item_revision"], 7)
-            self.assertEqual(event["image_id"], "image-a")
+            sink.publish.assert_called_once()
+            published = sink.publish.call_args.args[0]
+            self.assertEqual(published["writer_kind"], "MANUAL_SAVE")
+            self.assertEqual(
+                published["mutation_mode"], "APPLY_MANUAL_REVISION"
+            )
+            self.assertEqual(published["base_item_revision"], 7)
+            self.assertEqual(published["image_id"], "image-a")
             self.assertEqual(
                 sink.publish.call_args.kwargs["label_path"],
                 record.canonical_session_label_path,
             )
 
             widget.dirty = True
-            sink.publish.side_effect = RuntimeError("checkpoint failed")
+
+            def failed_save():
+                widget.dirty = False
+                widget.auto_labeling_commit_blocked = True
+                return True
+
+            widget.save_file.side_effect = failed_save
             with (
                 mock.patch.object(
                     QtWidgets.QMessageBox,
                     "question",
                     return_value=QtWidgets.QMessageBox.Save,
                 ),
-                self.assertRaisesRegex(RuntimeError, "checkpoint failed"),
+                self.assertRaisesRegex(
+                    FastControllerError,
+                    "manual_save_failed",
+                ),
             ):
                 FastRunUiSession._resolve_dirty(session, "resume")
-            widget.set_dirty.assert_called_once_with()
+            self.assertFalse(widget.dirty)
+            widget.set_dirty.assert_not_called()
+
+    def test_paused_resume_replays_pending_commit_before_clean_shortcut(self):
+        widget = SimpleNamespace(
+            dirty=False,
+            auto_labeling_commit_blocked=True,
+        )
+
+        def replay():
+            widget.auto_labeling_commit_blocked = False
+            return "IDEMPOTENT_NO_OP"
+
+        widget.annotation_commit_bridge = SimpleNamespace(
+            integrity_refresh=mock.Mock(side_effect=replay)
+        )
+        session = SimpleNamespace(
+            labeling_widget=widget,
+            tr=lambda value: value,
+        )
+
+        self.assertEqual(
+            FastRunUiSession._resolve_dirty(session, "resume"),
+            "CLEAN",
+        )
+        widget.annotation_commit_bridge.integrity_refresh.assert_called_once_with()
+
+    def test_paused_resume_never_runs_while_pending_replay_is_blocked(self):
+        widget = SimpleNamespace(
+            dirty=False,
+            auto_labeling_commit_blocked=True,
+            annotation_commit_bridge=SimpleNamespace(
+                integrity_refresh=mock.Mock(
+                    side_effect=RuntimeError("checkpoint unavailable")
+                )
+            ),
+        )
+        controller = SimpleNamespace(resume=mock.Mock())
+        progress = SimpleNamespace(clear_waiting_error=mock.Mock())
+        session = SimpleNamespace(
+            labeling_widget=widget,
+            controller=controller,
+            progress=progress,
+            tr=lambda value: value,
+            _show_control_failure=mock.Mock(),
+        )
+
+        FastRunUiSession._resume(session)
+
+        session._show_control_failure.assert_called_once()
+        controller.resume.assert_not_called()
+        progress.clear_waiting_error.assert_not_called()
 
     def test_retry_and_skip_controls_remain_visible_until_runner_idle(self):
         progress = SimpleNamespace(clear_waiting_error=mock.Mock())
@@ -384,6 +470,89 @@ class FastRunRoutingTests(unittest.TestCase):
         FastRunUiSession._retry(session)
         FastRunUiSession._skip(session)
         self.assertEqual(progress.clear_waiting_error.call_count, 2)
+
+    def _review_session(self, *, worker_running):
+        widget = SimpleNamespace(
+            actions=SimpleNamespace(),
+            start_auto_labeling_review=mock.Mock(return_value=True),
+        )
+        context = SimpleNamespace(activate_sequence_run=mock.Mock())
+        controller = object()
+        auto_widget = SimpleNamespace(
+            prediction_runner=controller,
+            _fast_run_session=None,
+            auto_labeling_host_context=context,
+            refresh_continuous_run_availability=mock.Mock(),
+        )
+        session = FastRunUiSession(widget, None)
+        auto_widget._fast_run_session = session
+        session.auto_widget = auto_widget
+        session.controller = controller
+        session.progress = SimpleNamespace(accept=mock.Mock())
+        thread = _ReviewWorkerThread(worker_running)
+        session.runner = SimpleNamespace(worker_thread=thread)
+        session._audit_client = object()
+        session.runner_class = mock.Mock()
+        session.controller_class = mock.Mock()
+        session._connect_thread_cleanup()
+        return session, thread, widget, auto_widget, context
+
+    def test_immediate_review_waits_for_worker_cleanup_and_starts_once(self):
+        session, thread, widget, auto_widget, context = self._review_session(
+            worker_running=True
+        )
+
+        self.assertTrue(session._review_now())
+        self.assertFalse(session._review_now())
+        widget.start_auto_labeling_review.assert_not_called()
+
+        thread.running = False
+        thread.finished.emit()
+        thread.finished.emit()
+
+        widget.start_auto_labeling_review.assert_called_once_with(
+            session._audit_client
+        )
+        session.progress.accept.assert_called_once_with()
+        self.assertIsNone(auto_widget.prediction_runner)
+        self.assertIsNone(auto_widget._fast_run_session)
+        session.runner_class.assert_not_called()
+        session.controller_class.assert_not_called()
+        context.activate_sequence_run.assert_not_called()
+
+    def test_immediate_review_starts_at_once_when_worker_has_stopped(self):
+        session, thread, widget, _auto_widget, context = self._review_session(
+            worker_running=False
+        )
+
+        self.assertTrue(session._review_now())
+        self.assertFalse(session._review_now())
+        thread.finished.emit()
+
+        widget.start_auto_labeling_review.assert_called_once_with(
+            session._audit_client
+        )
+        session.progress.accept.assert_called_once_with()
+        session.runner_class.assert_not_called()
+        session.controller_class.assert_not_called()
+        context.activate_sequence_run.assert_not_called()
+
+    def test_review_later_closes_progress_without_starting_review(self):
+        session, thread, widget, _auto_widget, context = self._review_session(
+            worker_running=True
+        )
+
+        self.assertTrue(session._review_later())
+        self.assertFalse(session._review_later())
+        self.assertFalse(session._review_now())
+        thread.running = False
+        thread.finished.emit()
+
+        session.progress.accept.assert_called_once_with()
+        widget.start_auto_labeling_review.assert_not_called()
+        session.runner_class.assert_not_called()
+        session.controller_class.assert_not_called()
+        context.activate_sequence_run.assert_not_called()
 
 
 if __name__ == "__main__":

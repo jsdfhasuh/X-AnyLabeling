@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 from urllib.parse import parse_qsl, urlsplit
 
 from .auto_labeling_run_store import AnnotationCommitSinkProtocolV1
+from .auto_labeling_audit import StagedAuditClientProtocolV1
 
 
 _CREDENTIAL_KEY = re.compile(
@@ -66,6 +67,11 @@ class SequenceRunActivationHostProtocolV1(
 ):
     def activate_sequence_run(self, request):
         pass
+
+
+@runtime_checkable
+class StagedAuditHostContextProtocolV1(Protocol):
+    staged_audit_client: StagedAuditClientProtocolV1
 
 
 def _record_value(record, field):
@@ -141,6 +147,12 @@ def _validate_context_services(context):
         AnnotationCommitSinkProtocolV1,
     ):
         raise HostContextValidationError("invalid_annotation_commit_sink")
+    audit_client = getattr(context, "staged_audit_client", None)
+    if audit_client is not None and not isinstance(
+        audit_client,
+        StagedAuditClientProtocolV1,
+    ):
+        raise HostContextValidationError("invalid_staged_audit_client")
     lease = context.annotation_session_lease
     if (
         lease is None

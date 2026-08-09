@@ -26,6 +26,7 @@ from anylabeling.views.labeling.utils.auto_labeling_contracts import (
     semantic_annotation_digest_v1,
     validate_annotation_commit_event_v1,
     validate_image_input_snapshot_v1,
+    validate_run_item_audit_history_v1,
     validate_workset_snapshot_v1,
     workset_digest_v1,
 )
@@ -553,6 +554,105 @@ class AnnotationCommitEventV1Tests(unittest.TestCase):
                                     ContractValidationError
                                 ):
                                     validate_annotation_commit_event_v1(event)
+
+
+class RunItemAuditHistoryV1Tests(unittest.TestCase):
+    @staticmethod
+    def _decision(scope="STAGED", action="APPROVE"):
+        return {
+            "audit_decision_schema_version": 1,
+            "decision_id": "00000000-0000-0000-0000-000000000001",
+            "project_id": "project-a",
+            "run_id": "run-a",
+            "image_id": "image-a",
+            "session_id": "session-a",
+            "scope": scope,
+            "reviewed_annotation_digest": "alsem1:" + "a" * 64,
+            "reviewed_image_digest": SHA_A,
+            "reviewer_action": action,
+            "authority_source_commit_sequence": (
+                1 if scope == "SOURCE" else None
+            ),
+            "base_item_revision": 3 if scope == "STAGED" else None,
+            "base_overlay_revision": 4 if scope == "SOURCE" else None,
+            "created_at": UTC_NOW,
+        }
+
+    def _item(self, status="staged_approved", scope="STAGED"):
+        decision = self._decision(scope)
+        return {
+            "run_id": "run-a",
+            "image_id": "image-a",
+            "review_status": status,
+            "last_audit_decision_id": decision["decision_id"],
+            "audit_decisions": [decision],
+            "digests": {
+                "reviewed_annotation_digest": "alsem1:" + "a" * 64,
+                "reviewed_image_digest": SHA_A,
+            },
+        }
+
+    def test_tampered_history_is_rejected_without_narrowing_stale(self):
+        item = self._item()
+        validate_run_item_audit_history_v1(item)
+
+        missing = copy.deepcopy(item)
+        missing["audit_decisions"] = []
+        missing["last_audit_decision_id"] = None
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "audit_decision_required_for_review_status",
+        ):
+            validate_run_item_audit_history_v1(missing)
+
+        duplicate = copy.deepcopy(item)
+        duplicate["audit_decisions"].append(
+            copy.deepcopy(duplicate["audit_decisions"][0])
+        )
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "duplicate_audit_decision_id",
+        ):
+            validate_run_item_audit_history_v1(duplicate)
+
+        mismatched_last = copy.deepcopy(item)
+        mismatched_last["last_audit_decision_id"] = (
+            "00000000-0000-0000-0000-000000000002"
+        )
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "last_audit_decision_id_mismatch",
+        ):
+            validate_run_item_audit_history_v1(mismatched_last)
+
+        wrong_action = copy.deepcopy(item)
+        wrong_action["audit_decisions"][-1]["reviewer_action"] = "NEEDS_FIX"
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "audit_decision_status_action_mismatch",
+        ):
+            validate_run_item_audit_history_v1(wrong_action)
+
+        wrong_digest = copy.deepcopy(item)
+        wrong_digest["audit_decisions"][-1]["reviewed_annotation_digest"] = (
+            "alsem1:" + "b" * 64
+        )
+        with self.assertRaisesRegex(
+            ContractValidationError,
+            "audit_decision_review_digest_mismatch",
+        ):
+            validate_run_item_audit_history_v1(wrong_digest)
+
+        for status in ("pending", "stale"):
+            retained = copy.deepcopy(item)
+            retained["review_status"] = status
+            retained["digests"]["reviewed_annotation_digest"] = (
+                "alsem1:" + "b" * 64
+            )
+            validate_run_item_audit_history_v1(retained)
+
+        source_mirror = self._item(status="approved", scope="SOURCE")
+        validate_run_item_audit_history_v1(source_mirror)
 
 
 if __name__ == "__main__":

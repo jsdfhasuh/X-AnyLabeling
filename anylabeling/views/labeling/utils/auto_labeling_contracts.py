@@ -210,6 +210,64 @@ ANNOTATION_COMMIT_EVENT_V1_SCHEMA = {
 }
 
 
+AUDIT_DECISION_FIELDS_V1 = (
+    "audit_decision_schema_version",
+    "decision_id",
+    "project_id",
+    "run_id",
+    "image_id",
+    "session_id",
+    "scope",
+    "reviewed_annotation_digest",
+    "reviewed_image_digest",
+    "reviewer_action",
+    "authority_source_commit_sequence",
+    "base_item_revision",
+    "base_overlay_revision",
+    "created_at",
+)
+
+
+AUDIT_DECISION_V1_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "AuditDecisionV1",
+    "type": "object",
+    "additionalProperties": False,
+    "required": list(AUDIT_DECISION_FIELDS_V1),
+    "properties": {
+        "audit_decision_schema_version": {"const": 1},
+        "decision_id": {"type": "string", "format": "uuid"},
+        "project_id": {"type": "string", "minLength": 1},
+        "run_id": {"type": ["string", "null"]},
+        "image_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": ["string", "null"]},
+        "scope": {"enum": ["STAGED", "SOURCE"]},
+        "reviewed_annotation_digest": {
+            "type": "string",
+            "pattern": "^alsem1:[0-9a-f]{64}$",
+        },
+        "reviewed_image_digest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+        },
+        "reviewer_action": {"enum": ["APPROVE", "NEEDS_FIX"]},
+        "authority_source_commit_sequence": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+        },
+        "base_item_revision": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+        },
+        "base_overlay_revision": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+        },
+        "created_at": {"type": "string", "format": "date-time"},
+    },
+}
+
+
 ANNOTATION_CANONICALIZATION_V1 = {
     "document_digest_schema_version": 1,
     "semantic_digest_schema_version": 1,
@@ -918,6 +976,137 @@ def validate_annotation_commit_event_v1(event):
     if event["event_id"] != expected_id:
         _fail("event_id_mismatch", "event_id")
     return event
+
+
+def validate_audit_decision_v1(decision):
+    """Validate and return the frozen AuditDecisionV1 mapping."""
+
+    decision = _require_mapping(decision, "$audit_decision")
+    _require_exact_fields(
+        decision,
+        AUDIT_DECISION_FIELDS_V1,
+        "$audit_decision",
+    )
+    if decision["audit_decision_schema_version"] != 1:
+        _fail(
+            "unsupported_schema_version",
+            "audit_decision_schema_version",
+        )
+    _require_uuid(decision["decision_id"], "decision_id")
+    _require_nonempty_string(decision["project_id"], "project_id")
+    _require_nullable_string(decision["run_id"], "run_id")
+    _require_nonempty_string(decision["image_id"], "image_id")
+    _require_nullable_string(decision["session_id"], "session_id")
+    scope = _require_enum(decision["scope"], {"STAGED", "SOURCE"}, "scope")
+    _require_versioned_digest(
+        decision["reviewed_annotation_digest"],
+        "semantic",
+        "reviewed_annotation_digest",
+    )
+    _require_sha256(decision["reviewed_image_digest"], "reviewed_image_digest")
+    _require_enum(
+        decision["reviewer_action"],
+        {"APPROVE", "NEEDS_FIX"},
+        "reviewer_action",
+    )
+    authority_sequence = decision["authority_source_commit_sequence"]
+    if authority_sequence is not None:
+        _require_integer(
+            authority_sequence,
+            "authority_source_commit_sequence",
+            positive=True,
+        )
+    for field in ("base_item_revision", "base_overlay_revision"):
+        value = decision[field]
+        if value is not None:
+            _require_integer(value, field, minimum=0)
+    _require_utc_timestamp(decision["created_at"], "created_at")
+    if scope == "STAGED":
+        if decision["base_item_revision"] is None:
+            _fail("staged_decision_base_item_missing", "$audit_decision")
+        if (
+            authority_sequence is not None
+            or decision["base_overlay_revision"] is not None
+        ):
+            _fail(
+                "staged_decision_source_authority_present",
+                "$audit_decision",
+            )
+    else:
+        if (
+            authority_sequence is None
+            or decision["base_overlay_revision"] is None
+        ):
+            _fail("source_decision_authority_missing", "$audit_decision")
+        if decision["base_item_revision"] is not None:
+            _fail(
+                "source_decision_item_authority_present",
+                "$audit_decision",
+            )
+    return decision
+
+
+def validate_run_item_audit_history_v1(item):
+    """Validate the decision evidence carried by one RunItemV1."""
+
+    item = _require_mapping(item, "$item")
+    run_id = _require_nonempty_string(item.get("run_id"), "run_id")
+    image_id = _require_nonempty_string(item.get("image_id"), "image_id")
+    review_status = _require_enum(
+        item.get("review_status"),
+        {
+            "not_applicable",
+            "pending",
+            "staged_approved",
+            "approved",
+            "needs_fix",
+            "stale",
+        },
+        "review_status",
+    )
+    last_decision_id = item.get("last_audit_decision_id")
+    if last_decision_id is not None:
+        _require_uuid(last_decision_id, "last_audit_decision_id")
+    decisions = item.get("audit_decisions")
+    if type(decisions) is not list:
+        _fail("expected_array", "audit_decisions")
+    digests = _require_mapping(item.get("digests"), "digests")
+
+    decision_ids = []
+    for index, decision in enumerate(decisions):
+        path = f"audit_decisions[{index}]"
+        validate_audit_decision_v1(decision)
+        if decision["image_id"] != image_id:
+            _fail("decision_image_id_mismatch", path)
+        if decision["run_id"] != run_id:
+            _fail("decision_run_id_mismatch", path)
+        decision_ids.append(decision["decision_id"])
+    if len(set(decision_ids)) != len(decision_ids):
+        _fail("duplicate_audit_decision_id", "audit_decisions")
+
+    expected_last_id = decision_ids[-1] if decision_ids else None
+    if last_decision_id != expected_last_id:
+        _fail("last_audit_decision_id_mismatch", "last_audit_decision_id")
+
+    expected_action = {
+        "staged_approved": "APPROVE",
+        "approved": "APPROVE",
+        "needs_fix": "NEEDS_FIX",
+    }.get(review_status)
+    if expected_action is None:
+        return item
+    if not decisions:
+        _fail("audit_decision_required_for_review_status", "review_status")
+    latest = decisions[-1]
+    if latest["reviewer_action"] != expected_action:
+        _fail("audit_decision_status_action_mismatch", "review_status")
+    if latest["reviewed_annotation_digest"] != digests.get(
+        "reviewed_annotation_digest"
+    ) or latest["reviewed_image_digest"] != digests.get(
+        "reviewed_image_digest"
+    ):
+        _fail("audit_decision_review_digest_mismatch", "digests")
+    return item
 
 
 def validate_workset_digest_v1(value):
