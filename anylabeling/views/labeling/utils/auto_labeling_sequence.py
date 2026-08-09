@@ -301,7 +301,7 @@ LEGACY_SEQUENCE_CAPABILITIES = AutoLabelingSequenceCapabilities(
 )
 
 
-_YOLO_FAST_TYPES = frozenset(
+_YOLO_DETECT_SEQUENCE_TYPES = frozenset(
     {
         "yolov5",
         "yolov6",
@@ -312,10 +312,36 @@ _YOLO_FAST_TYPES = frozenset(
         "yolo11",
         "yolo12",
         "yolo26",
-        "yolov8_pose",
-        "yolo11_pose",
     }
 )
+_YOLO_POSE_SEQUENCE_TYPES = frozenset({"yolov8_pose", "yolo11_pose"})
+_YOLO_FAST_TYPES = _YOLO_DETECT_SEQUENCE_TYPES | _YOLO_POSE_SEQUENCE_TYPES
+
+_INTERACTIVE_SAM_TYPES = frozenset(
+    {
+        "edge_sam",
+        "efficientvit_sam",
+        "grounding_sam",
+        "grounding_sam2",
+        "sam_hq",
+        "sam_med2d",
+        "segment_anything",
+        "segment_anything_2",
+        "yolov5_sam",
+        "yolov8_sam2",
+    }
+)
+_VIDEO_SEQUENCE_TYPES = frozenset(
+    {
+        "segment_anything_2_video",
+        "sam2_video",
+        "sam3_video",
+    }
+)
+_REMOTE_MULTI_IMAGE_TYPES = frozenset({"remote_server"})
+
+UNIFIED_SEQUENCE_ROUTE_V1 = "UNIFIED_SEQUENCE"
+LEGACY_BATCH_ROUTE_V1 = "LEGACY_BATCH"
 _YOLO_FAST_CAPABILITIES = AutoLabelingSequenceCapabilities(
     supports_fast_sequence=True,
     supports_visible_sequence=True,
@@ -329,6 +355,15 @@ _YOLO_FAST_CAPABILITIES = AutoLabelingSequenceCapabilities(
 )
 
 
+@dataclass(frozen=True)
+class SequenceCapabilityDecisionV1:
+    model_family: str
+    route: str
+    reason_code: str | None
+    creates_unified_audit_queue: bool
+    capabilities: AutoLabelingSequenceCapabilities
+
+
 def resolve_sequence_capabilities(model_config):
     if type(model_config) is not dict:
         return LEGACY_SEQUENCE_CAPABILITIES
@@ -336,6 +371,63 @@ def resolve_sequence_capabilities(model_config):
     if model_type in _YOLO_FAST_TYPES:
         return _YOLO_FAST_CAPABILITIES
     return LEGACY_SEQUENCE_CAPABILITIES
+
+
+def resolve_sequence_capability_decision_v1(model_config):
+    """Return the explicit Fast/Visible or Legacy routing decision."""
+
+    capabilities = resolve_sequence_capabilities(model_config)
+    model_type = (
+        model_config.get("type") if type(model_config) is dict else None
+    )
+    if model_type in _YOLO_DETECT_SEQUENCE_TYPES:
+        family = "YOLO_DETECT"
+    elif model_type in _YOLO_POSE_SEQUENCE_TYPES:
+        family = "YOLO_POSE"
+    elif type(model_type) is str and model_type.endswith("_track"):
+        family = "TRACKER"
+    elif model_type in _VIDEO_SEQUENCE_TYPES:
+        family = "VIDEO"
+    elif model_type in _INTERACTIVE_SAM_TYPES:
+        family = "INTERACTIVE_SAM"
+    elif model_type in _REMOTE_MULTI_IMAGE_TYPES:
+        family = "REMOTE_MULTI_IMAGE"
+    elif type(model_type) is str and (
+        model_type.endswith("_seg") or "_seg_" in model_type
+    ):
+        family = "SEGMENTATION"
+    elif type(model_type) is str and (
+        model_type.endswith("_obb") or "_obb_" in model_type
+    ):
+        family = "OBB"
+    else:
+        family = "UNVERIFIED"
+
+    if capabilities.supports_fast_sequence:
+        return SequenceCapabilityDecisionV1(
+            model_family=family,
+            route=UNIFIED_SEQUENCE_ROUTE_V1,
+            reason_code=None,
+            creates_unified_audit_queue=True,
+            capabilities=capabilities,
+        )
+
+    reasons = {
+        "SEGMENTATION": "capability_not_validated",
+        "OBB": "capability_not_validated",
+        "TRACKER": "stateful_across_images",
+        "VIDEO": "stateful_across_images",
+        "INTERACTIVE_SAM": "interactive_input_required",
+        "REMOTE_MULTI_IMAGE": "remote_multi_image_unverified",
+        "UNVERIFIED": "model_not_registered",
+    }
+    return SequenceCapabilityDecisionV1(
+        model_family=family,
+        route=LEGACY_BATCH_ROUTE_V1,
+        reason_code=reasons[family],
+        creates_unified_audit_queue=False,
+        capabilities=capabilities,
+    )
 
 
 def _sha256_file(path):

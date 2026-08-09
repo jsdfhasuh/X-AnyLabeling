@@ -9,6 +9,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5 import QtWidgets
 
 from anylabeling.views.labeling.label_widget import LabelingWidget
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_boolean_text_v1,
+    auto_labeling_text_v1,
+)
 from anylabeling.views.labeling.widgets.auto_labeling_audit_dialog import (
     AuditInteractionGuard,
     AutoLabelingAuditDialog,
@@ -167,10 +171,25 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
                 }
             )
             self.assertIn("target_count=0", dialog.detail_label.text())
-            self.assertIn("zero_target=True", dialog.detail_label.text())
-            self.assertIn("dirty=true", dialog.status_label.text())
-            self.assertIn("Session 已通过 2", dialog.counts_label.text())
-            self.assertIn("项目源已通过 3", dialog.counts_label.text())
+            self.assertIn(
+                f"zero_target={auto_labeling_boolean_text_v1(True)}",
+                dialog.detail_label.text(),
+            )
+            self.assertIn(
+                f"dirty={auto_labeling_boolean_text_v1(True)}",
+                dialog.status_label.text(),
+            )
+            self.assertEqual(
+                dialog.counts_label.text(),
+                auto_labeling_text_v1(
+                    "audit_summary",
+                    staged_approved=2,
+                    source_approved=3,
+                    needs_fix=4,
+                    pending=5,
+                    stale=6,
+                ),
+            )
             for count in ("2", "3", "4", "5", "6"):
                 self.assertIn(count, dialog.counts_label.text())
         finally:

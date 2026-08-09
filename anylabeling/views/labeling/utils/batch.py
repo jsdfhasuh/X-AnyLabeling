@@ -25,6 +25,9 @@ from anylabeling.services.auto_labeling import (
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.utils._io import io_open
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_text_v1,
+)
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import get_msg_box_style
 from anylabeling.views.labeling.widgets.popup import Popup
@@ -71,7 +74,7 @@ class TextInputDialog(QDialog):
                 background-color: #ffffff;
                 border-radius: 10px;
             }
-            
+
             QLineEdit {
                 border: 1px solid #E5E5E5;
                 border-radius: 8px;
@@ -80,16 +83,16 @@ class TextInputDialog(QDialog):
                 height: 36px;
                 padding: 0 12px;
             }
-            
+
             QLineEdit:hover {
                 background-color: #DBDBDB;
             }
-            
+
             QLineEdit:focus {
                 border: 2px solid #0066FF;
                 background-color: #F9F9F9;
             }
-            
+
             QPushButton {
                 min-width: 100px;
                 height: 36px;
@@ -97,31 +100,31 @@ class TextInputDialog(QDialog):
                 font-weight: 500;
                 font-size: 13px;
             }
-            
+
             QPushButton[text="OK"] {
                 background-color: #0066FF;
                 color: white;
                 border: none;
             }
-            
+
             QPushButton[text="OK"]:hover {
                 background-color: #0077ED;
             }
-            
+
             QPushButton[text="OK"]:pressed {
                 background-color: #0068D0;
             }
-            
+
             QPushButton[text="Cancel"] {
                 background-color: #f5f5f7;
                 color: #1d1d1f;
                 border: 1px solid #d2d2d7;
             }
-            
+
             QPushButton[text="Cancel"]:hover {
                 background-color: #e5e5e5;
             }
-            
+
             QPushButton[text="Cancel"]:pressed {
                 background-color: #d5d5d5;
             }
@@ -599,19 +602,20 @@ def run_all_images(self):
         )
         return None
 
-    from .auto_labeling_sequence import resolve_sequence_capabilities
+    from .auto_labeling_sequence import (
+        UNIFIED_SEQUENCE_ROUTE_V1,
+        resolve_sequence_capability_decision_v1,
+    )
 
-    capability = resolve_sequence_capabilities(model_config)
-    if capability.supports_fast_sequence:
+    decision = resolve_sequence_capability_decision_v1(model_config)
+    if decision.route == UNIFIED_SEQUENCE_ROUTE_V1:
         opener = getattr(auto_widget, "open_continuous_auto_labeling", None)
         if not callable(opener):
             manager.new_model_status.emit(
-                self.tr("fast_sequence_entry_unavailable")
+                auto_labeling_text_v1("sequence_unavailable_no_fallback")
             )
             return False
         return opener()
 
-    manager.new_model_status.emit(
-        self.tr("Legacy Batch：当前模型暂不支持统一快速标注流程")
-    )
+    manager.new_model_status.emit(auto_labeling_text_v1("legacy_no_audit"))
     return run_all_images_legacy(self)

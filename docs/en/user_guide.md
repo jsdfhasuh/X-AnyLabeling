@@ -980,7 +980,32 @@ X-AnyLabeling supports various annotation tasks. Follow the links below for spec
 
 For details on integrating and using your own custom AI models within X-AnyLabeling for assisted annotation, refer to the [Custom Models](./custom_model.md) guide.
 
-## 10. Advanced Features
+## 10. Unified Continuous Auto-Labeling
+
+When X-AnyLabeling is opened from a labeling Session in the Training
+Platform, supported detection and pose models can use one continuous run:
+
+- **Fast** uses a `0.0` second delay. It processes and commits each image in
+  the background without switching the main canvas.
+- **Visible** uses a positive delay. It shows each verified saved result and
+  then advances after the configured dwell time.
+- Segmentation, OBB, tracking, video, interactive SAM, remote, and other
+  unverified model families remain on **Legacy Batch**. Legacy Batch does not
+  create a unified audit queue.
+
+Every continuous result remains pending until it is reviewed. An unchanged or
+saved Session result becomes `staged_approved`; it becomes `approved` only
+after the matching source annotation is reconciled and verified. Mark a result
+as needs-fix when it should not be promoted. A later source change invalidates
+an older decision instead of silently preserving approval.
+
+The Dataset gate uses current source-backed `approved` evidence. It does not
+infer approval from the existence of a label file or from `staged_approved`.
+When policy permits, the project owner can authorize a single-use `waiver` for
+the exact Dataset snapshot; the waiver is consumed atomically and cannot be
+reused for another snapshot.
+
+## 11. Advanced Features
 
 - Remote Server Guide: [Link](https://github.com/CVHub520/X-AnyLabeling-Server)
 - Chatbot Guide: [Link](../en/chatbot.md)

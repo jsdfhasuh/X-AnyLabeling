@@ -46,6 +46,9 @@ from anylabeling.views.labeling.widgets.searchable_model_dropdown import (
 from anylabeling.views.labeling.utils.auto_labeling_host import (
     validate_auto_labeling_host_context,
 )
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_text_v1,
+)
 
 
 class AutoLabelingWidget(QWidget):
@@ -94,7 +97,7 @@ class AutoLabelingWidget(QWidget):
         uic.loadUi(os.path.join(current_dir, "auto_labeling.ui"), self)
 
         self.button_continuous_run = QPushButton(
-            self.tr("连续自动标注…"), self
+            auto_labeling_text_v1("continuous_entry"), self
         )
         self.button_continuous_run.setIcon(
             self.style().standardIcon(QStyle.SP_MediaPlay)
@@ -342,9 +345,9 @@ class AutoLabelingWidget(QWidget):
         )
         self.mask_fineness_value_label.setStyleSheet(
             """
-            QLabel { 
-                color: #6c757d; 
-                font-size: 10px; 
+            QLabel {
+                color: #6c757d;
+                font-size: 10px;
                 font-weight: 500;
                 background: transparent;
                 border: none;
@@ -407,21 +410,16 @@ class AutoLabelingWidget(QWidget):
         ready = self.auto_labeling_host_context is None or bool(
             self.auto_labeling_host_context.images_ready
         )
-        unbound = self.auto_labeling_host_context is None or (
-            self.auto_labeling_host_context.active_run_id is None
-        )
         active = self._fast_run_session is not None
-        self.button_continuous_run.setEnabled(
-            loaded and ready and unbound and not active
-        )
+        self.button_continuous_run.setEnabled(loaded and ready and not active)
         capability = resolve_sequence_capabilities(config)
         if loaded and not capability.supports_fast_sequence:
             self.button_continuous_run.setToolTip(
-                self.tr("Legacy Batch：当前模型暂不支持统一快速标注流程")
+                auto_labeling_text_v1("legacy_no_audit")
             )
         else:
             self.button_continuous_run.setToolTip(
-                self.tr("0.0 秒快速批处理，主画布不逐张切换")
+                auto_labeling_text_v1("fast_tooltip")
             )
 
     def run_continuous_auto_labeling(self):
@@ -436,7 +434,7 @@ class AutoLabelingWidget(QWidget):
     def open_continuous_auto_labeling(self, initial_delay=0.0):
         if self._fast_run_session is not None:
             self.model_manager.new_model_status.emit(
-                self.tr("连续自动标注已在运行。")
+                auto_labeling_text_v1("already_running")
             )
             return False
         from anylabeling.views.labeling.widgets.auto_labeling_run_dialog import (
@@ -493,7 +491,7 @@ class AutoLabelingWidget(QWidget):
                     "config_path": model_dict["config_path"],
                 }
 
-        except Exception as _:
+        except Exception:
             local_model_data = {}
 
         model_list = self.model_manager.get_model_configs()
@@ -570,54 +568,57 @@ class AutoLabelingWidget(QWidget):
         self.model_dropdown.adjustSize()
         self.model_dropdown.show()
 
+    def _configure_remote_server_model(self, model_name):
+        if "remote_server" not in model_name.lower():
+            return True
+        config_path = self.model_info[model_name].get("config_path")
+        if not config_path or not config_path.startswith(":/"):
+            return True
+        try:
+            user_config = get_config()
+            remote_settings = user_config.get("remote_server_settings", {})
+            default_url = remote_settings.get(
+                "server_url",
+                "http://127.0.0.1:8000",
+            )
+            default_api_key = remote_settings.get("api_key", "")
+            dialog = RemoteServerDialog(self, default_url, default_api_key)
+            if dialog.exec_() != QDialog.Accepted:
+                return False
+
+            new_url = dialog.get_server_url()
+            new_api_key = dialog.get_api_key()
+            if new_url:
+                self.model_manager.update_model_config(
+                    config_path,
+                    "server_url",
+                    new_url,
+                )
+            self.model_manager.update_model_config(
+                config_path,
+                "api_key",
+                new_api_key,
+            )
+            if not hasattr(self.parent, "_config"):
+                self.parent._config = {}
+            if "remote_server_settings" not in self.parent._config:
+                self.parent._config["remote_server_settings"] = {}
+            if new_url:
+                self.parent._config["remote_server_settings"][
+                    "server_url"
+                ] = new_url
+            self.parent._config["remote_server_settings"][
+                "api_key"
+            ] = new_api_key
+            return True
+        except Exception as e:
+            logger.error(f"Failed to process remote_server config: {e}")
+            return False
+
     def on_model_selected(self, provider, model_name):
         """Handle the model selected event"""
-
-        if "remote_server" in model_name.lower():
-            config_path = self.model_info[model_name].get("config_path")
-            if config_path and config_path.startswith(":/"):
-                try:
-                    user_config = get_config()
-                    remote_settings = user_config.get(
-                        "remote_server_settings", {}
-                    )
-                    default_url = remote_settings.get(
-                        "server_url",
-                        "http://127.0.0.1:8000",
-                    )
-                    default_api_key = remote_settings.get("api_key", "")
-                    dialog = RemoteServerDialog(
-                        self, default_url, default_api_key
-                    )
-
-                    if dialog.exec_() == QDialog.Accepted:
-                        new_url = dialog.get_server_url()
-                        new_api_key = dialog.get_api_key()
-                        if new_url:
-                            self.model_manager.update_model_config(
-                                config_path, "server_url", new_url
-                            )
-                        self.model_manager.update_model_config(
-                            config_path, "api_key", new_api_key
-                        )
-                        if not hasattr(self.parent, "_config"):
-                            self.parent._config = {}
-                        if "remote_server_settings" not in self.parent._config:
-                            self.parent._config["remote_server_settings"] = {}
-                        if new_url:
-                            self.parent._config["remote_server_settings"][
-                                "server_url"
-                            ] = new_url
-                        self.parent._config["remote_server_settings"][
-                            "api_key"
-                        ] = new_api_key
-                    else:
-                        return
-                except Exception as e:
-                    logger.error(
-                        f"Failed to process remote_server config: {e}"
-                    )
-                    return
+        if not self._configure_remote_server_model(model_name):
+            return
 
         if model_name == "load_custom_model":
             # Unload current model first
@@ -868,7 +869,7 @@ class AutoLabelingWidget(QWidget):
             else:
                 initial_iou_value = 0.0
                 self.edit_iou.setValue(initial_iou_value)
-        except Exception as _:
+        except Exception:
             initial_iou_value = 0.0
             self.edit_iou.setValue(initial_iou_value)
 
@@ -891,7 +892,7 @@ class AutoLabelingWidget(QWidget):
             else:
                 initial_conf_value = 0.0
                 self.edit_conf.setValue(initial_conf_value)
-        except Exception as _:
+        except Exception:
             initial_conf_value = 0.0
             self.edit_conf.setValue(initial_conf_value)
 

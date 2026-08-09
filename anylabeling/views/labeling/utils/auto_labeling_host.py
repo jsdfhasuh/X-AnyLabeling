@@ -1,5 +1,6 @@
-"""Duck-typed host boundary for embedded Phase 3 auto-labeling services."""
+"""Duck-typed host boundary for embedded auto-labeling services."""
 
+import copy
 import os
 import re
 import unicodedata
@@ -66,6 +67,29 @@ class SequenceRunActivationHostProtocolV1(
     Protocol,
 ):
     def activate_sequence_run(self, request):
+        pass
+
+
+@runtime_checkable
+class ResumeSequenceHostProtocolV1(
+    AutoLabelingHostContextProtocol,
+    Protocol,
+):
+    def read_active_run_resume_spec(self):
+        pass
+
+    def resume_sequence_run(self, request):
+        pass
+
+    def update_active_run_state(self, expected_state_revision, changes):
+        pass
+
+    def update_active_run_item(
+        self,
+        image_id,
+        expected_item_revision,
+        changes,
+    ):
         pass
 
 
@@ -269,6 +293,90 @@ def resolve_model_fingerprint(context):
     if provider is None:
         raise HostContextValidationError("model_fingerprint_unavailable")
     return validate_model_fingerprint_payload(provider())
+
+
+def resolve_resume_sequence_spec_v1(context):
+    """Read and cross-check the immutable config and current resume binding."""
+
+    context = validate_auto_labeling_host_context(context)
+    if context.active_run_id is None:
+        raise HostContextValidationError("resume_run_id_missing")
+    read_spec = getattr(context, "read_active_run_resume_spec", None)
+    resume = getattr(context, "resume_sequence_run", None)
+    if not callable(read_spec) or not callable(resume):
+        raise HostContextValidationError("resume_host_service_unavailable")
+    spec = read_spec()
+    if type(spec) is not dict or set(spec) != {"config", "binding"}:
+        raise HostContextValidationError("invalid_resume_spec")
+    config = spec["config"]
+    binding = spec["binding"]
+    config_fields = {
+        "run_config_schema_version",
+        "run_id",
+        "run_kind",
+        "project_id",
+        "created_at",
+        "created_by_app_version",
+        "workset_source",
+        "workset_digest",
+        "delay_seconds",
+        "range",
+        "filter",
+        "write_policy",
+        "model_fingerprint",
+        "parameter_snapshot",
+        "label_path_policy",
+        "document_digest_schema_version",
+        "semantic_digest_schema_version",
+        "config_digest",
+    }
+    binding_fields = {
+        "binding_schema_version",
+        "binding_id",
+        "project_id",
+        "run_id",
+        "session_id",
+        "attempt_id",
+        "purpose",
+        "status",
+        "created_at",
+        "updated_at",
+    }
+    if type(config) is not dict or set(config) != config_fields:
+        raise HostContextValidationError("invalid_resume_run_config")
+    if type(binding) is not dict or set(binding) != binding_fields:
+        raise HostContextValidationError("invalid_resume_binding")
+    if (
+        config["run_config_schema_version"] != 1
+        or config["run_kind"] != "AUTO_LABELING"
+        or config["run_id"] != context.active_run_id
+        or config["project_id"] != context.project_id
+        or config["workset_source"] != "SESSION_WORKSET"
+        or config["label_path_policy"] != "HOST_CONTEXT"
+    ):
+        raise HostContextValidationError("resume_run_config_identity_mismatch")
+    if (
+        binding["binding_schema_version"] != 1
+        or binding["purpose"] != "resume_remaining"
+        or binding["status"] != "committed"
+        or binding["project_id"] != context.project_id
+        or binding["run_id"] != context.active_run_id
+        or binding["session_id"] != context.active_session_id
+        or type(binding["attempt_id"]) is not str
+        or not binding["attempt_id"].strip()
+        or type(binding["binding_id"]) is not str
+        or not binding["binding_id"].strip()
+    ):
+        raise HostContextValidationError("resume_binding_identity_mismatch")
+    persisted_config = context.run_store.read_config(context.active_run_id)
+    state = context.run_store.read_state(context.active_run_id)
+    if persisted_config != config:
+        raise HostContextValidationError("resume_config_snapshot_mismatch")
+    if state.get("binding") != binding:
+        raise HostContextValidationError("resume_binding_snapshot_mismatch")
+    validate_model_fingerprint_payload(config["model_fingerprint"])
+    validate_model_fingerprint_payload(config["parameter_snapshot"])
+    return copy.deepcopy(spec)
 
 
 def set_auto_labeling_host_context(context):

@@ -1,5 +1,20 @@
 # X-AnyLabeling Changelog
 
+## Unreleased
+
+### New Features
+
+- Add Unified continuous auto-labeling for verified detection and pose
+  models, with Fast and Visible execution sharing the same crash-safe commit
+  and audit workflow.
+- Add immediate and resumed review workflows with explicit
+  `staged_approved`, source-backed `approved`, needs-fix, and stale states.
+
+### Compatibility
+
+- Segmentation, OBB, tracking, video, interactive, remote, and unverified
+  model families remain on Legacy Batch; it does not create a unified audit queue.
+
 ## `v3.3.7` (Jan 25, 2026)
 
 ### 🚀 New Features

@@ -23,6 +23,9 @@ from anylabeling.views.labeling.utils.auto_labeling_commit import (
     atomic_write_label_document,
     resolve_existing_label,
 )
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_text_v1,
+)
 from anylabeling.views.labeling.utils.auto_labeling_sequence import (
     FastRunOptionsV1,
     FastSequenceContractError,
@@ -319,14 +322,22 @@ class SequenceOptionsAndDialogTests(unittest.TestCase):
             self.assertEqual(dialog.delay_spin.singleStep(), 0.5)
             self.assertEqual(dialog.delay_spin.decimals(), 1)
             self.assertEqual(dialog.delay_spin.value(), 2.0)
-            self.assertIn("可视连续标注", dialog.note_label.text())
             self.assertEqual(
-                dialog.start_button.text(), dialog.tr("开始可视连续标注")
+                dialog.note_label.text(),
+                auto_labeling_text_v1("visible_description"),
+            )
+            self.assertEqual(
+                dialog.start_button.text(),
+                auto_labeling_text_v1("start_visible"),
             )
             dialog.delay_spin.setValue(0.0)
-            self.assertIn("快速批处理", dialog.note_label.text())
             self.assertEqual(
-                dialog.start_button.text(), dialog.tr("开始快速标注")
+                dialog.note_label.text(),
+                auto_labeling_text_v1("fast_description"),
+            )
+            self.assertEqual(
+                dialog.start_button.text(),
+                auto_labeling_text_v1("start_fast"),
             )
         finally:
             dialog.close()
@@ -369,10 +380,17 @@ class SequenceOptionsAndDialogTests(unittest.TestCase):
                 }
             )
             self.assertEqual(
-                dialog.state_label.text(), dialog.tr("结果已保存并显示")
+                dialog.state_label.text(),
+                auto_labeling_text_v1("phase_presenting"),
             )
-            self.assertEqual(dialog.configured_delay_label.text(), "2.0 秒")
-            self.assertEqual(dialog.remaining_delay_label.text(), "1.2 秒")
+            self.assertEqual(
+                dialog.configured_delay_label.text(),
+                f"2.0{auto_labeling_text_v1('seconds_suffix')}",
+            )
+            self.assertEqual(
+                dialog.remaining_delay_label.text(),
+                f"1.2{auto_labeling_text_v1('seconds_suffix')}",
+            )
             dialog.set_phase("PAUSED")
             dialog.update_progress(
                 {"delay_seconds": 2.0, "remaining_seconds": 1.25}

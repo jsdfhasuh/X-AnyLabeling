@@ -20,8 +20,12 @@ from anylabeling.services.auto_labeling.prediction_job import (
 from anylabeling.views.labeling.utils.auto_labeling_commit import (
     LabelConflictError,
     commit_label_for_image_v1,
+    recover_image_commit_v1,
     resolve_existing_label,
     validate_output_paths_v1,
+)
+from anylabeling.views.labeling.utils.auto_labeling_host import (
+    resolve_resume_sequence_spec_v1,
 )
 from anylabeling.views.labeling.utils.auto_labeling_run_store import (
     InMemoryCommitStoreV1,
@@ -783,6 +787,7 @@ class ContinuousAutoLabelingController(QtCore.QObject):
         self._safe_generation = None
         self._live_summary = None
         self._item_contributions = {}
+        self._resume_spec = None
         self.current_presentation_image_id = None
         self.current_presentation_epoch = 0
         self.presentation_epoch = 0
@@ -879,14 +884,29 @@ class ContinuousAutoLabelingController(QtCore.QObject):
 
         if not bool(getattr(self.host_context, "images_ready", False)):
             raise FastControllerError("images_not_ready")
-        activate = getattr(self.host_context, "activate_sequence_run", None)
-        if not callable(activate) and self.execution_mode == "FAST":
-            activate = getattr(self.host_context, "activate_fast_run", None)
+        active_run_id = getattr(self.host_context, "active_run_id", None)
+        if active_run_id is not None:
+            self._resume_spec = resolve_resume_sequence_spec_v1(
+                self.host_context
+            )
+            activate = getattr(self.host_context, "resume_sequence_run", None)
+            run_id = active_run_id
+            session_attempt_id = self._resume_spec["binding"]["attempt_id"]
+        else:
+            activate = getattr(
+                self.host_context, "activate_sequence_run", None
+            )
+            if not callable(activate) and self.execution_mode == "FAST":
+                activate = getattr(
+                    self.host_context, "activate_fast_run", None
+                )
+            run_id = str(uuid.uuid4())
+            session_attempt_id = str(uuid.uuid4())
         if not callable(activate):
             raise FastControllerError("host_activation_service_unavailable")
         request = self.options.activation_request(
-            run_id=str(uuid.uuid4()),
-            session_attempt_id=str(uuid.uuid4()),
+            run_id=run_id,
+            session_attempt_id=session_attempt_id,
             created_by_app_version=self.created_by_app_version,
         )
         activation = activate(request)
@@ -902,8 +922,22 @@ class ContinuousAutoLabelingController(QtCore.QObject):
         }
         if callable(self.context_replacer):
             self.context_replacer(bound_context)
+        if self._resume_spec is not None:
+            self._recover_resumed_items()
         self._load_queue()
         self._activate_presenter()
+
+    def _recover_resumed_items(self):
+        for record in self.records_by_id.values():
+            image_id = _record_value(record, "image_id")
+            label_path = _record_value(record, "canonical_session_label_path")
+            result = recover_image_commit_v1(
+                store=self.commit_store,
+                image_id=image_id,
+                label_path=label_path,
+            )
+            if result.action == "CONFLICT":
+                continue
 
     def _activate_presenter(self):
         if self.execution_mode != "VISIBLE":
@@ -961,12 +995,28 @@ class ContinuousAutoLabelingController(QtCore.QObject):
 
     def _set_run_state(self, **changes):
         state = self.run_store.read_state(self.run_id)
+        update_bound = getattr(
+            self.host_context,
+            "update_active_run_state",
+            None,
+        )
+        if callable(update_bound):
+            return update_bound(state["revision"], changes)
         return self.run_store.update_state(
             self.run_id, state["revision"], changes
         )
 
     def _update_item(self, image_id, changes):
         item = self.run_store.read_item(self.run_id, image_id)
+        update_bound = getattr(
+            self.host_context,
+            "update_active_run_item",
+            None,
+        )
+        if callable(update_bound):
+            return self._track_item(
+                update_bound(image_id, item["item_revision"], changes)
+            )
         return self._track_item(
             self.run_store.update_item(
                 self.run_id, image_id, item["item_revision"], changes
@@ -983,7 +1033,10 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             entry = self.queue_entries[self.queue_position]
             self.queue_position += 1
             item = self.run_store.read_item(self.run_id, entry["image_id"])
-            if item["execution_status"] == "queued":
+            if item["execution_status"] == "queued" or (
+                item["execution_status"] == "failed"
+                and item["failure_resolution"] == "unresolved"
+            ):
                 self._dispatch_item(item)
                 return
         self._finalize("complete")

@@ -9,6 +9,11 @@ from unittest import mock
 from PyQt5 import QtCore, QtWidgets
 
 from anylabeling.views.labeling.utils import batch
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_boolean_text_v1,
+    auto_labeling_status_text_v1,
+    auto_labeling_text_v1,
+)
 from anylabeling.views.labeling.utils.continuous_auto_labeling import (
     FastControllerError,
 )
@@ -116,7 +121,10 @@ class FastRunDialogTests(unittest.TestCase):
                     "processing_status": "COMPLETED",
                 }
             )
-            self.assertEqual(dialog.state_label.text(), dialog.tr("无需处理"))
+            self.assertEqual(
+                dialog.state_label.text(),
+                auto_labeling_text_v1("nothing_to_process"),
+            )
         finally:
             dialog.close()
 
@@ -196,8 +204,17 @@ class FastRunRoutingTests(unittest.TestCase):
             for field, value in summary.items():
                 with self.subTest(field=field):
                     self.assertIn(field, dialog.metric_labels)
+                    expected = value
+                    if field == "processing_status":
+                        expected = auto_labeling_status_text_v1(
+                            value,
+                            "processing",
+                        )
+                    elif field == "completed_with_errors":
+                        expected = auto_labeling_boolean_text_v1(value)
                     self.assertEqual(
-                        dialog.metric_labels[field].text(), str(value)
+                        dialog.metric_labels[field].text(),
+                        str(expected),
                     )
         finally:
             dialog.close()

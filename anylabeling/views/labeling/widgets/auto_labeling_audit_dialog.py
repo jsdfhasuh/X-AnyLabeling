@@ -6,6 +6,11 @@ from anylabeling.views.labeling.utils.auto_labeling_audit import (
     StagedAuditClientProtocolV1,
     StagedAuditError,
 )
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_boolean_text_v1,
+    auto_labeling_status_text_v1,
+    auto_labeling_text_v1,
+)
 
 
 class AuditInteractionGuard:
@@ -69,7 +74,7 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._allow_close = False
-        self.setWindowTitle(self.tr("连续自动标注审计"))
+        self.setWindowTitle(auto_labeling_text_v1("audit_title"))
         self.setWindowModality(QtCore.Qt.NonModal)
         self.setMinimumWidth(560)
 
@@ -91,20 +96,30 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
         layout.addWidget(self.counts_label)
 
         navigation = QtWidgets.QHBoxLayout()
-        self.previous_button = QtWidgets.QPushButton(self.tr("上一张"))
-        self.next_button = QtWidgets.QPushButton(self.tr("下一张待审计"))
+        self.previous_button = QtWidgets.QPushButton(
+            auto_labeling_text_v1("previous")
+        )
+        self.next_button = QtWidgets.QPushButton(
+            auto_labeling_text_v1("next_pending")
+        )
         navigation.addWidget(self.previous_button)
         navigation.addWidget(self.next_button)
         navigation.addStretch(1)
         layout.addLayout(navigation)
 
         decisions = QtWidgets.QHBoxLayout()
-        self.needs_fix_button = QtWidgets.QPushButton(self.tr("标记需修改"))
-        self.save_approve_button = QtWidgets.QPushButton(
-            self.tr("保存、通过并下一张")
+        self.needs_fix_button = QtWidgets.QPushButton(
+            auto_labeling_text_v1("mark_needs_fix")
         )
-        self.approve_button = QtWidgets.QPushButton(self.tr("通过并下一张"))
-        self.finish_button = QtWidgets.QPushButton(self.tr("结束审计"))
+        self.save_approve_button = QtWidgets.QPushButton(
+            auto_labeling_text_v1("save_approve_next")
+        )
+        self.approve_button = QtWidgets.QPushButton(
+            auto_labeling_text_v1("approve_next")
+        )
+        self.finish_button = QtWidgets.QPushButton(
+            auto_labeling_text_v1("finish_audit")
+        )
         decisions.addWidget(self.needs_fix_button)
         decisions.addStretch(1)
         decisions.addWidget(self.save_approve_button)
@@ -121,36 +136,37 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
 
     def set_item(self, item, dirty):
         self.identity_label.setText(
-            self.tr(
-                "{filename}  |  image_id={image_id}  |  #{sequence}"
-            ).format(**item)
+            auto_labeling_text_v1("audit_identity", **item)
         )
         self.status_label.setText(
-            self.tr("审计状态：{status}  |  dirty={dirty}").format(
-                status=item["review_status"],
-                dirty="true" if dirty else "false",
+            auto_labeling_text_v1(
+                "audit_status",
+                status=auto_labeling_status_text_v1(
+                    item["review_status"],
+                    "review",
+                ),
+                dirty=auto_labeling_boolean_text_v1(dirty),
             )
         )
         self.detail_label.setText(
-            self.tr(
-                "staged={staged}  |  source={source}  |  "
-                "target_count={target_count}  |  zero_target={zero_target}"
-            ).format(
-                staged=item["staged_commit_status"],
-                source=item["source_commit_status"],
+            auto_labeling_text_v1(
+                "audit_detail",
+                staged=auto_labeling_status_text_v1(
+                    item["staged_commit_status"],
+                    "commit",
+                ),
+                source=auto_labeling_status_text_v1(
+                    item["source_commit_status"],
+                    "commit",
+                ),
                 target_count=item["target_count"],
-                zero_target=item["zero_target"],
+                zero_target=auto_labeling_boolean_text_v1(item["zero_target"]),
             )
         )
 
     def set_summary(self, summary):
         self.counts_label.setText(
-            self.tr(
-                "当前 Session 已通过 {staged_approved}  |  "
-                "项目源已通过 {source_approved}  |  "
-                "需修改 {needs_fix}  |  待审计 {pending}  |  "
-                "stale {stale}"
-            ).format(**summary)
+            auto_labeling_text_v1("audit_summary", **summary)
         )
 
     def allow_close(self):
@@ -256,7 +272,7 @@ class StagedAuditUiSession(QtCore.QObject):
         detail = str(exc)
         QtWidgets.QMessageBox.warning(
             self.widget,
-            self.tr("无法完成审计动作"),
+            auto_labeling_text_v1("audit_action_failed"),
             f"{code}\n{detail}" if detail != code else code,
         )
 

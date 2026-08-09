@@ -61,6 +61,7 @@ from .utils.auto_labeling_commit_bridge import (
     AnnotationCommitBridgeError,
     AnnotationCommitBridgeV1,
 )
+from .utils.auto_labeling_i18n import auto_labeling_text_v1
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -3830,7 +3831,7 @@ class LabelingWidget(LabelDialog):
         except AnnotationCommitBridgeError as exc:
             self.dirty = True
             self.error_message(
-                self.tr("Annotation integrity refresh required"),
+                auto_labeling_text_v1("integrity_refresh_required"),
                 self.tr("<b>%s</b>") % exc,
             )
             return False
@@ -4116,7 +4117,7 @@ class LabelingWidget(LabelDialog):
         except AnnotationCommitBridgeError as exc:
             self.dirty = True
             self.error_message(
-                self.tr("Annotation integrity refresh required"),
+                auto_labeling_text_v1("integrity_refresh_required"),
                 self.tr("<b>%s</b>") % exc,
             )
             return False
@@ -5461,7 +5462,7 @@ class LabelingWidget(LabelDialog):
                 self.annotation_commit_bridge.integrity_refresh()
             except AnnotationCommitBridgeError as exc:
                 self.error_message(
-                    self.tr("Annotation integrity refresh required"),
+                    auto_labeling_text_v1("integrity_refresh_required"),
                     self.tr("<b>%s</b>") % exc,
                 )
                 return False
@@ -5473,7 +5474,7 @@ class LabelingWidget(LabelDialog):
             )
         except AnnotationCommitBridgeError as exc:
             self.error_message(
-                self.tr("Annotation integrity refresh required"),
+                auto_labeling_text_v1("integrity_refresh_required"),
                 self.tr("<b>%s</b>") % exc,
             )
             return False
@@ -5644,7 +5645,7 @@ class LabelingWidget(LabelDialog):
                 recovered_pending = True
             except AnnotationCommitBridgeError as exc:
                 self.error_message(
-                    self.tr("Annotation integrity refresh required"),
+                    auto_labeling_text_v1("integrity_refresh_required"),
                     self.tr("<b>%s</b>") % exc,
                 )
                 return False
@@ -5656,7 +5657,7 @@ class LabelingWidget(LabelDialog):
                 )
             except AnnotationCommitBridgeError as exc:
                 self.error_message(
-                    self.tr("Annotation integrity refresh required"),
+                    auto_labeling_text_v1("integrity_refresh_required"),
                     self.tr("<b>%s</b>") % exc,
                 )
                 return False
@@ -5773,7 +5774,7 @@ class LabelingWidget(LabelDialog):
                 self.annotation_commit_bridge.integrity_refresh()
             except AnnotationCommitBridgeError as exc:
                 self.error_message(
-                    self.tr("Annotation integrity refresh required"),
+                    auto_labeling_text_v1("integrity_refresh_required"),
                     self.tr("<b>%s</b>") % exc,
                 )
                 return False
