@@ -198,9 +198,6 @@ class StagedAuditUiSession(QtCore.QObject):
         self.items = []
         self.current_image_id = None
         self._closed = False
-        self._refresh_timer = QtCore.QTimer(self)
-        self._refresh_timer.setInterval(250)
-        self._refresh_timer.timeout.connect(self._refresh_display)
         self._connect()
 
     def _connect(self):
@@ -221,13 +218,35 @@ class StagedAuditUiSession(QtCore.QObject):
         self.guard.activate()
         self.dialog.show()
         self._load(self.items[0]["image_id"], initial=True)
-        self._refresh_timer.start()
         return True
+
+    def _remember_item(self, item):
+        image_id = item["image_id"]
+        for index, existing in enumerate(self.items):
+            if existing["image_id"] == image_id:
+                merged = dict(existing)
+                merged.update(item)
+                self.items[index] = merged
+                return merged
+        remembered = dict(item)
+        self.items.append(remembered)
+        self.items.sort(key=lambda value: value["sequence"])
+        return remembered
+
+    def _cached_item(self, image_id):
+        for item in self.items:
+            if item["image_id"] == image_id:
+                return item
+        return None
 
     def _current_item(self):
         if self.current_image_id is None:
             raise StagedAuditError("audit_current_image_missing")
-        return self.client.read_review_item(self.current_image_id)
+        item = self._cached_item(self.current_image_id)
+        if item is None:
+            item = self.client.read_review_item(self.current_image_id)
+            item = self._remember_item(item)
+        return item
 
     def _ensure_clean_and_coordinated(self):
         if bool(getattr(self.widget, "dirty", False)):
@@ -241,6 +260,7 @@ class StagedAuditUiSession(QtCore.QObject):
         item = self.client.read_review_item(image_id)
         if item.get("integrity_error"):
             raise StagedAuditError(item["integrity_error"])
+        item = self._remember_item(item)
         image_path = item["canonical_image_path"]
         file_list = getattr(self.widget, "file_list_widget", None)
         blocked = False
@@ -258,12 +278,14 @@ class StagedAuditUiSession(QtCore.QObject):
             if file_list is not None:
                 file_list.blockSignals(blocked)
         self.current_image_id = image_id
-        self._refresh_display()
+        self._refresh_display(item)
 
-    def _refresh_display(self):
+    def _refresh_display(self, item=None):
         if self._closed or self.current_image_id is None:
             return
-        item = self.client.read_review_item(self.current_image_id)
+        if item is None:
+            item = self.client.read_review_item(self.current_image_id)
+            item = self._remember_item(item)
         self.dialog.set_item(item, bool(getattr(self.widget, "dirty", False)))
         self.dialog.set_summary(self.client.summary())
 
@@ -281,12 +303,14 @@ class StagedAuditUiSession(QtCore.QObject):
         refreshed = self.client.integrity_refresh(self.current_image_id)
         if refreshed.get("integrity_error"):
             raise StagedAuditError(refreshed["integrity_error"])
+        self._remember_item(refreshed)
         return refreshed["item_revision"]
 
     def approve_and_next(self):
         try:
             revision = self._verified_revision()
-            self.client.approve(self.current_image_id, revision)
+            updated = self.client.approve(self.current_image_id, revision)
+            self._remember_item(updated)
             self.next_pending()
         except Exception as exc:  # noqa: B902
             self._warn(exc)
@@ -296,7 +320,8 @@ class StagedAuditUiSession(QtCore.QObject):
             if not self.widget.save_file():
                 raise StagedAuditError("audit_save_failed")
             revision = self._verified_revision()
-            self.client.approve(self.current_image_id, revision)
+            updated = self.client.approve(self.current_image_id, revision)
+            self._remember_item(updated)
             self.next_pending()
         except Exception as exc:  # noqa: B902
             self._warn(exc)
@@ -304,7 +329,8 @@ class StagedAuditUiSession(QtCore.QObject):
     def mark_needs_fix(self):
         try:
             revision = self._verified_revision()
-            self.client.needs_fix(self.current_image_id, revision)
+            updated = self.client.needs_fix(self.current_image_id, revision)
+            self._remember_item(updated)
             self._refresh_display()
         except Exception as exc:  # noqa: B902
             self._warn(exc)
@@ -326,7 +352,12 @@ class StagedAuditUiSession(QtCore.QObject):
             self._ensure_clean_and_coordinated()
             current = self._current_item()["sequence"]
             pending = sorted(
-                self.client.list_review_items(),
+                (
+                    item
+                    for item in self.items
+                    if item["review_status"]
+                    in {"pending", "needs_fix", "stale"}
+                ),
                 key=lambda value: value["sequence"],
             )
             candidates = [
@@ -352,7 +383,6 @@ class StagedAuditUiSession(QtCore.QObject):
             self._warn(exc)
             return False
         self._closed = True
-        self._refresh_timer.stop()
         self.guard.release()
         self.dialog.allow_close()
         self.dialog.close()

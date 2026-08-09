@@ -6,7 +6,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtTest, QtWidgets
 
 from anylabeling.views.labeling.label_widget import LabelingWidget
 from anylabeling.views.labeling.utils.auto_labeling_i18n import (
@@ -45,8 +45,12 @@ class _AuditClient:
     def __init__(self, items):
         self.items = {item["image_id"]: copy.deepcopy(item) for item in items}
         self.calls = []
+        self.list_calls = 0
+        self.read_calls = 0
+        self.summary_calls = 0
 
     def list_review_items(self):
+        self.list_calls += 1
         reviewable = {"pending", "needs_fix", "stale"}
         return [
             copy.deepcopy(item)
@@ -55,9 +59,11 @@ class _AuditClient:
         ]
 
     def read_review_item(self, image_id):
+        self.read_calls += 1
         return copy.deepcopy(self.items[image_id])
 
     def summary(self):
+        self.summary_calls += 1
         counts = {
             "staged_approved": 0,
             "source_approved": 0,
@@ -224,13 +230,16 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
             _item("image-a", 10),
             _item("image-b", 20),
         ]
+        client = _AuditClient(items)
         widget = _widget(items)
-        session = StagedAuditUiSession(widget, _AuditClient(items))
+        session = StagedAuditUiSession(widget, client)
         try:
             self.assertTrue(session.begin())
             self.assertEqual(session.current_image_id, "image-a")
+            self.assertEqual(client.list_calls, 1)
             session.next_pending()
             self.assertEqual(session.current_image_id, "image-b")
+            self.assertEqual(client.list_calls, 1)
             session.previous()
             self.assertEqual(session.current_image_id, "image-a")
             self.assertEqual(
@@ -240,6 +249,34 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
                     "C:/session/image-b.png",
                     "C:/session/image-a.png",
                 ],
+            )
+        finally:
+            widget.dirty = False
+            session.finish()
+            widget.close()
+
+    def test_idle_audit_session_does_not_poll_persistent_client(self):
+        items = [_item("image-a", 0), _item("image-b", 1)]
+        client = _AuditClient(items)
+        widget = _widget(items)
+        session = StagedAuditUiSession(widget, client)
+        try:
+            self.assertTrue(session.begin())
+            baseline = (
+                client.list_calls,
+                client.read_calls,
+                client.summary_calls,
+            )
+
+            QtTest.QTest.qWait(350)
+
+            self.assertEqual(
+                (
+                    client.list_calls,
+                    client.read_calls,
+                    client.summary_calls,
+                ),
+                baseline,
             )
         finally:
             widget.dirty = False
