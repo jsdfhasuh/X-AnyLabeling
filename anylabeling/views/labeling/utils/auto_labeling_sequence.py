@@ -1,4 +1,4 @@
-"""Frozen Phase 4 Fast options, capability registry, and model identity."""
+"""Continuous sequence options, capability registry, and model identity."""
 
 import copy
 import hashlib
@@ -26,6 +26,10 @@ FAST_WRITE_POLICIES_V1 = frozenset(
 FAST_WORKSET_SOURCES_V1 = frozenset(
     {"SESSION_WORKSET", "CURRENT_FILE_LIST_SNAPSHOT"}
 )
+SEQUENCE_RANGES_V1 = FAST_RANGES_V1
+SEQUENCE_FILTERS_V1 = FAST_FILTERS_V1
+SEQUENCE_WRITE_POLICIES_V1 = FAST_WRITE_POLICIES_V1
+SEQUENCE_WORKSET_SOURCES_V1 = FAST_WORKSET_SOURCES_V1
 _CREDENTIAL_KEY = re.compile(
     r"(api[_-]?key|token|secret|authorization|password)", re.IGNORECASE
 )
@@ -166,8 +170,56 @@ def validate_model_fingerprint_v1(value):
     return fingerprint
 
 
+def validate_sequence_delay_seconds_v1(value):
+    if (
+        type(value) not in {int, float}
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+    ):
+        raise FastSequenceContractError("invalid_sequence_delay_seconds")
+    normalized = float(value)
+    if normalized < 0.0 or normalized > 60.0:
+        raise FastSequenceContractError("invalid_sequence_delay_seconds")
+    doubled = normalized * 2.0
+    if not doubled.is_integer():
+        raise FastSequenceContractError("invalid_sequence_delay_step")
+    return normalized
+
+
+def _normalize_run_options(instance, error_prefix):
+    if instance.range not in SEQUENCE_RANGES_V1:
+        raise FastSequenceContractError(f"invalid_{error_prefix}_range")
+    if instance.filter not in SEQUENCE_FILTERS_V1:
+        raise FastSequenceContractError(f"invalid_{error_prefix}_filter")
+    if instance.write_policy not in SEQUENCE_WRITE_POLICIES_V1:
+        raise FastSequenceContractError(f"invalid_{error_prefix}_write_policy")
+    if instance.workset_source not in SEQUENCE_WORKSET_SOURCES_V1:
+        raise FastSequenceContractError(
+            f"invalid_{error_prefix}_workset_source"
+        )
+    if instance.range == "CURRENT_TO_END" and (
+        type(instance.current_anchor_image_id) is not str
+        or not instance.current_anchor_image_id
+    ):
+        raise FastSequenceContractError("current_anchor_image_id_required")
+    fingerprint = validate_model_fingerprint_v1(instance.model_fingerprint)
+    parameters = _plain_json(
+        instance.parameter_snapshot, "$parameter_snapshot"
+    )
+    if type(fingerprint) is not dict or type(parameters) is not dict:
+        raise FastSequenceContractError(
+            f"invalid_{error_prefix}_options_payload"
+        )
+    object.__setattr__(
+        instance, "model_fingerprint", _freeze_json(fingerprint)
+    )
+    object.__setattr__(
+        instance, "parameter_snapshot", _freeze_json(parameters)
+    )
+
+
 @dataclass(frozen=True)
-class FastRunOptionsV1:
+class SequenceRunOptionsV1:
     delay_seconds: float
     range: str
     filter: str
@@ -178,40 +230,13 @@ class FastRunOptionsV1:
     parameter_snapshot: object
 
     def __post_init__(self):
-        if (
-            type(self.delay_seconds) not in {int, float}
-            or isinstance(self.delay_seconds, bool)
-            or self.delay_seconds != 0.0
-        ):
-            raise FastSequenceContractError(
-                "visible_mode_not_available_phase4"
-            )
-        object.__setattr__(self, "delay_seconds", 0.0)
-        if self.range not in FAST_RANGES_V1:
-            raise FastSequenceContractError("invalid_fast_range")
-        if self.filter not in FAST_FILTERS_V1:
-            raise FastSequenceContractError("invalid_fast_filter")
-        if self.write_policy not in FAST_WRITE_POLICIES_V1:
-            raise FastSequenceContractError("invalid_fast_write_policy")
-        if self.workset_source not in FAST_WORKSET_SOURCES_V1:
-            raise FastSequenceContractError("invalid_fast_workset_source")
-        if self.range == "CURRENT_TO_END" and (
-            type(self.current_anchor_image_id) is not str
-            or not self.current_anchor_image_id
-        ):
-            raise FastSequenceContractError("current_anchor_image_id_required")
-        fingerprint = validate_model_fingerprint_v1(self.model_fingerprint)
-        parameters = _plain_json(
-            self.parameter_snapshot, "$parameter_snapshot"
-        )
-        if type(fingerprint) is not dict or type(parameters) is not dict:
-            raise FastSequenceContractError("invalid_fast_options_payload")
-        object.__setattr__(
-            self, "model_fingerprint", _freeze_json(fingerprint)
-        )
-        object.__setattr__(
-            self, "parameter_snapshot", _freeze_json(parameters)
-        )
+        delay = validate_sequence_delay_seconds_v1(self.delay_seconds)
+        object.__setattr__(self, "delay_seconds", delay)
+        _normalize_run_options(self, "sequence")
+
+    @property
+    def execution_mode(self):
+        return "FAST" if self.delay_seconds == 0.0 else "VISIBLE"
 
     def activation_request(
         self,
@@ -231,8 +256,23 @@ class FastRunOptionsV1:
             "model_fingerprint": thaw_json(self.model_fingerprint),
             "parameter_snapshot": thaw_json(self.parameter_snapshot),
             "created_by_app_version": created_by_app_version,
-            "delay_seconds": 0.0,
+            "delay_seconds": self.delay_seconds,
         }
+
+
+@dataclass(frozen=True)
+class FastRunOptionsV1(SequenceRunOptionsV1):
+    def __post_init__(self):
+        if (
+            type(self.delay_seconds) not in {int, float}
+            or isinstance(self.delay_seconds, bool)
+            or self.delay_seconds != 0.0
+        ):
+            raise FastSequenceContractError(
+                "visible_mode_not_available_phase4"
+            )
+        object.__setattr__(self, "delay_seconds", 0.0)
+        _normalize_run_options(self, "fast")
 
 
 @dataclass(frozen=True)
@@ -278,7 +318,7 @@ _YOLO_FAST_TYPES = frozenset(
 )
 _YOLO_FAST_CAPABILITIES = AutoLabelingSequenceCapabilities(
     supports_fast_sequence=True,
-    supports_visible_sequence=False,
+    supports_visible_sequence=True,
     single_image_independent=True,
     requires_frozen_text_prompt=False,
     uses_existing_shapes_input=False,

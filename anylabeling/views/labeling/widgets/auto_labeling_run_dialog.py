@@ -18,14 +18,19 @@ from anylabeling.views.labeling.utils.auto_labeling_run_store import (
 )
 from anylabeling.views.labeling.utils.auto_labeling_sequence import (
     FastRunOptionsV1,
+    SequenceRunOptionsV1,
     build_model_fingerprint_v1,
     build_parameter_snapshot_v1,
     resolve_sequence_capabilities,
+    validate_sequence_delay_seconds_v1,
 )
 from anylabeling.views.labeling.utils.continuous_auto_labeling import (
+    ContinuousAutoLabelingController,
     FastAutoLabelingController,
     FastCanvasStateGuard,
     FastControllerError,
+    LabelingWidgetSequencePresenter,
+    VisibleCanvasStateGuard,
     standalone_image_id_v1,
 )
 
@@ -40,8 +45,45 @@ def _record_value(record, field):
     return getattr(record, field, None)
 
 
-class FastRunSetupDialog(QtWidgets.QDialog):
-    """Collect only the zero-delay options authorized for Phase 4."""
+_DEFAULT_SEQUENCE_SETTINGS = {
+    "delay_seconds": 2.0,
+    "range": "CURRENT_TO_END",
+    "filter": "ALL",
+    "write_policy": "INHERIT_MODEL_POLICY",
+}
+
+
+def continuous_auto_labeling_settings_v1(config):
+    result = dict(_DEFAULT_SEQUENCE_SETTINGS)
+    raw = config.get("continuous_auto_labeling", {})
+    if type(raw) is not dict:
+        return result
+    try:
+        result["delay_seconds"] = validate_sequence_delay_seconds_v1(
+            raw.get("delay_seconds", result["delay_seconds"])
+        )
+    except Exception:
+        pass
+    for field, allowed in (
+        ("range", {"ALL_IMAGES", "CURRENT_TO_END"}),
+        ("filter", {"ALL", "ONLY_WITHOUT_VALID_ANNOTATION"}),
+        (
+            "write_policy",
+            {
+                "INHERIT_MODEL_POLICY",
+                "SKIP_EXISTING",
+                "FORCE_REPLACE",
+                "FORCE_MERGE",
+            },
+        ),
+    ):
+        if raw.get(field) in allowed:
+            result[field] = raw[field]
+    return result
+
+
+class ContinuousRunSetupDialog(QtWidgets.QDialog):
+    """Collect the unified Fast or Visible sequence options."""
 
     def __init__(
         self,
@@ -49,6 +91,7 @@ class FastRunSetupDialog(QtWidgets.QDialog):
         model_summary,
         *,
         current_anchor_available,
+        initial_values=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -61,15 +104,13 @@ class FastRunSetupDialog(QtWidgets.QDialog):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(12)
 
-        title = QtWidgets.QLabel(self.tr("快速批处理"))
-        title.setStyleSheet("font-size: 16px; font-weight: 600;")
-        layout.addWidget(title)
+        self.title_label = QtWidgets.QLabel()
+        self.title_label.setStyleSheet("font-size: 16px; font-weight: 600;")
+        layout.addWidget(self.title_label)
 
-        note = QtWidgets.QLabel(
-            self.tr("快速批处理会在后台逐张推理并保存，主画布不会逐张切换。")
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        self.note_label = QtWidgets.QLabel()
+        self.note_label.setWordWrap(True)
+        layout.addWidget(self.note_label)
 
         form = QtWidgets.QFormLayout()
         form.setHorizontalSpacing(18)
@@ -78,11 +119,16 @@ class FastRunSetupDialog(QtWidgets.QDialog):
         self.range_combo = QtWidgets.QComboBox()
         self.range_combo.addItem(self.tr("全部图片"), "ALL_IMAGES")
         self.range_combo.addItem(self.tr("当前到末尾"), "CURRENT_TO_END")
-        if current_anchor_available:
-            self.range_combo.setCurrentIndex(1)
-        else:
+        values = dict(_DEFAULT_SEQUENCE_SETTINGS)
+        if type(initial_values) is dict:
+            values.update(initial_values)
+        if not current_anchor_available:
             model = self.range_combo.model()
             model.item(1).setEnabled(False)
+            values["range"] = "ALL_IMAGES"
+        self.range_combo.setCurrentIndex(
+            max(0, self.range_combo.findData(values["range"]))
+        )
         form.addRow(self.tr("基础范围"), self.range_combo)
 
         self.filter_combo = QtWidgets.QComboBox()
@@ -90,6 +136,9 @@ class FastRunSetupDialog(QtWidgets.QDialog):
         self.filter_combo.addItem(
             self.tr("仅无有效标注"),
             "ONLY_WITHOUT_VALID_ANNOTATION",
+        )
+        self.filter_combo.setCurrentIndex(
+            max(0, self.filter_combo.findData(values["filter"]))
         )
         form.addRow(self.tr("过滤"), self.filter_combo)
 
@@ -101,10 +150,18 @@ class FastRunSetupDialog(QtWidgets.QDialog):
             (self.tr("强制合并"), "FORCE_MERGE"),
         ):
             self.write_policy_combo.addItem(text, value)
+        self.write_policy_combo.setCurrentIndex(
+            max(0, self.write_policy_combo.findData(values["write_policy"]))
+        )
         form.addRow(self.tr("写入策略"), self.write_policy_combo)
 
-        delay = QtWidgets.QLabel(self.tr("0.0 秒（快速批处理，不逐张显示）"))
-        form.addRow(self.tr("停留时间"), delay)
+        self.delay_spin = QtWidgets.QDoubleSpinBox()
+        self.delay_spin.setRange(0.0, 60.0)
+        self.delay_spin.setSingleStep(0.5)
+        self.delay_spin.setDecimals(1)
+        self.delay_spin.setSuffix(self.tr(" 秒"))
+        self.delay_spin.setValue(float(values["delay_seconds"]))
+        form.addRow(self.tr("停留时间"), self.delay_spin)
         form.addRow(self.tr("模型与参数"), QtWidgets.QLabel(model_summary))
         form.addRow(
             self.tr("实际工作集数量"),
@@ -122,7 +179,7 @@ class FastRunSetupDialog(QtWidgets.QDialog):
 
         buttons = QtWidgets.QDialogButtonBox()
         self.start_button = buttons.addButton(
-            self.tr("开始快速标注"),
+            "",
             QtWidgets.QDialogButtonBox.AcceptRole,
         )
         self.start_button.setIcon(
@@ -132,13 +189,52 @@ class FastRunSetupDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.delay_spin.valueChanged.connect(self._sync_delay_mode)
+        self._sync_delay_mode(self.delay_spin.value())
+
+    def _sync_delay_mode(self, delay):
+        if float(delay) == 0.0:
+            self.title_label.setText(self.tr("快速批处理"))
+            self.note_label.setText(
+                self.tr("快速批处理：后台逐张推理并保存，不逐张显示。")
+            )
+            self.start_button.setText(self.tr("开始快速标注"))
+        else:
+            self.title_label.setText(self.tr("可视连续标注"))
+            self.note_label.setText(
+                self.tr(
+                    "可视连续标注：每张结果安全保存后显示，并停留指定时间后自动切换。"
+                )
+            )
+            self.start_button.setText(self.tr("开始可视连续标注"))
 
     def selected_values(self):
         return {
+            "delay_seconds": self.delay_spin.value(),
             "range": self.range_combo.currentData(),
             "filter": self.filter_combo.currentData(),
             "write_policy": self.write_policy_combo.currentData(),
         }
+
+
+class FastRunSetupDialog(ContinuousRunSetupDialog):
+    """Phase 4 compatibility dialog with a locked zero-second delay."""
+
+    def __init__(self, summary, model_summary, **kwargs):
+        values = dict(kwargs.pop("initial_values", {}) or {})
+        values["delay_seconds"] = 0.0
+        super().__init__(
+            summary,
+            model_summary,
+            initial_values=values,
+            **kwargs,
+        )
+        self.delay_spin.setEnabled(False)
+
+    def selected_values(self):
+        values = super().selected_values()
+        values.pop("delay_seconds")
+        return values
 
 
 class FastRunProgressDialog(QtWidgets.QDialog):
@@ -193,6 +289,13 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("0 / 0")
         layout.addWidget(self.progress_bar)
+
+        timing = QtWidgets.QFormLayout()
+        self.configured_delay_label = QtWidgets.QLabel("0.0 秒")
+        self.remaining_delay_label = QtWidgets.QLabel("0.0 秒")
+        timing.addRow(self.tr("配置停留时间"), self.configured_delay_label)
+        timing.addRow(self.tr("当前剩余时间"), self.remaining_delay_label)
+        layout.addLayout(timing)
 
         metrics = QtWidgets.QGridLayout()
         self.metric_labels = {}
@@ -249,6 +352,7 @@ class FastRunProgressDialog(QtWidgets.QDialog):
             "LOADING": self.tr("正在准备运行"),
             "INFERENCING": self.tr("正在后台推理"),
             "COMMITTING": self.tr("正在安全保存"),
+            "PRESENTING": self.tr("结果已保存并显示"),
             "WAITING_ERROR": self.tr("等待错误处理"),
             "PAUSED": self.tr("已暂停"),
             "FINISHED": self.tr("运行已结束"),
@@ -273,6 +377,16 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.progress_bar.setValue(processed)
         self.progress_bar.setFormat(f"{processed} / {total}")
         self.file_label.setText(str(progress.get("current_filename", "")))
+        delay = float(progress.get("delay_seconds", 0.0) or 0.0)
+        remaining = float(progress.get("remaining_seconds", 0.0) or 0.0)
+        self.configured_delay_label.setText(f"{delay:.1f} 秒")
+        self.remaining_delay_label.setText(f"{remaining:.1f} 秒")
+        if self._paused and delay > 0.0:
+            self.state_label.setText(
+                self.tr("已暂停，剩余 {remaining:.1f} 秒").format(
+                    remaining=remaining
+                )
+            )
         for field, label in self.metric_labels.items():
             label.setText(str(progress.get(field, 0)))
 
@@ -283,7 +397,7 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.error_label.show()
         self.retry_button.show()
         self.skip_button.show()
-        self.pause_button.setEnabled(False)
+        self.pause_button.setEnabled(True)
 
     def clear_waiting_error(self):
         self.error_label.clear()
@@ -331,21 +445,23 @@ class FastRunProgressDialog(QtWidgets.QDialog):
 
 
 class FastRunUiSession(QtCore.QObject):
-    """Own one setup/progress/controller lifecycle for a labeling widget."""
+    """Own one unified Fast/Visible lifecycle for a labeling widget."""
 
-    setup_dialog_class = FastRunSetupDialog
+    setup_dialog_class = ContinuousRunSetupDialog
     progress_dialog_class = FastRunProgressDialog
     runner_class = PredictionRunner
-    controller_class = FastAutoLabelingController
+    controller_class = ContinuousAutoLabelingController
 
-    def __init__(self, labeling_widget, auto_widget):
+    def __init__(self, labeling_widget, auto_widget, initial_delay=0.0):
         super().__init__(auto_widget)
         self.labeling_widget = labeling_widget
         self.auto_widget = auto_widget
+        self.initial_delay = initial_delay
         self.runner = None
         self.controller = None
         self.progress = None
         self.guard = None
+        self.presenter = None
         self._thread_cleanup_connected = False
 
     def begin(self):
@@ -356,6 +472,10 @@ class FastRunUiSession(QtCore.QObject):
                 return False
             options, image_paths = prepared
             self.runner = self.runner_class(self.auto_widget.model_manager)
+            if options.execution_mode == "VISIBLE":
+                self.presenter = LabelingWidgetSequencePresenter(
+                    self.labeling_widget
+                )
             self.controller = self.controller_class(
                 self.runner,
                 options,
@@ -364,9 +484,15 @@ class FastRunUiSession(QtCore.QObject):
                 standalone_output_dir=self.labeling_widget.output_dir,
                 context_replacer=self._replace_context,
                 pose_config=getattr(self.labeling_widget, "pose_config", None),
+                presentation_adapter=self.presenter,
             )
             self.progress = self.progress_dialog_class(self.labeling_widget)
-            self.guard = FastCanvasStateGuard(self.labeling_widget)
+            guard_class = (
+                FastCanvasStateGuard
+                if options.execution_mode == "FAST"
+                else VisibleCanvasStateGuard
+            )
+            self.guard = guard_class(self.labeling_widget)
             self._connect_controls()
             self.auto_widget.prediction_runner = self.controller
             self.guard.set_running(True)
@@ -384,15 +510,18 @@ class FastRunUiSession(QtCore.QObject):
         if type(model_config) is not dict or model_config.get("model") is None:
             raise FastControllerError("prediction_model_not_loaded")
         capability = resolve_sequence_capabilities(model_config)
-        if not capability.supports_fast_sequence:
-            raise FastControllerError("fast_sequence_not_supported")
+        if not (
+            capability.supports_fast_sequence
+            or capability.supports_visible_sequence
+        ):
+            raise FastControllerError("sequence_not_supported")
         lease = self.auto_widget.model_manager.inference_lease
         if bool(getattr(lease, "is_active", False)):
             raise FastControllerError("inference_lease_busy")
         canvas = getattr(self.labeling_widget, "canvas", None)
         if getattr(canvas, "current", None) is not None:
             raise FastControllerError("unfinished_shape_blocks_fast_run")
-        if self._resolve_dirty(self.tr("开始快速标注")) is None:
+        if self._resolve_dirty(self.tr("开始连续自动标注")) is None:
             return None
 
         context = self.auto_widget.auto_labeling_host_context
@@ -421,17 +550,33 @@ class FastRunUiSession(QtCore.QObject):
         conf = parameters.get("confidence_threshold")
         iou = parameters.get("iou_threshold")
         model_summary = f"{model_name} · conf={conf} · IOU={iou}"
+        settings = continuous_auto_labeling_settings_v1(
+            self.labeling_widget._config
+        )
+        if self.initial_delay is not None:
+            try:
+                settings["delay_seconds"] = validate_sequence_delay_seconds_v1(
+                    self.initial_delay
+                )
+            except Exception:
+                settings["delay_seconds"] = 2.0
         dialog = self.setup_dialog_class(
             preview,
             model_summary,
             current_anchor_available=anchor_id is not None,
+            initial_values=settings,
             parent=self.labeling_widget,
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return None
         selected = dialog.selected_values()
-        options = FastRunOptionsV1(
-            delay_seconds=0.0,
+        delay = validate_sequence_delay_seconds_v1(selected["delay_seconds"])
+        if delay == 0.0 and not capability.supports_fast_sequence:
+            raise FastControllerError("fast_sequence_not_supported")
+        if delay > 0.0 and not capability.supports_visible_sequence:
+            raise FastControllerError("visible_sequence_not_supported")
+        options = SequenceRunOptionsV1(
+            delay_seconds=delay,
             range=selected["range"],
             filter=selected["filter"],
             write_policy=selected["write_policy"],
@@ -442,6 +587,12 @@ class FastRunUiSession(QtCore.QObject):
             model_fingerprint=fingerprint,
             parameter_snapshot=parameters,
         )
+        self.labeling_widget._config["continuous_auto_labeling"] = {
+            "delay_seconds": delay,
+            "range": selected["range"],
+            "filter": selected["filter"],
+            "write_policy": selected["write_policy"],
+        }
         return options, image_paths
 
     def _current_anchor_id(self, context):
@@ -601,12 +752,17 @@ class FastRunUiSession(QtCore.QObject):
         self.progress.set_phase(phase)
         if phase == "PAUSED":
             self.guard.set_paused(True)
-        elif phase in {"LOADING", "INFERENCING", "COMMITTING"}:
+        elif phase in {
+            "LOADING",
+            "INFERENCING",
+            "COMMITTING",
+            "PRESENTING",
+        }:
             self.guard.set_running(True)
 
     def _resume(self):
         try:
-            resolution = self._resolve_dirty(self.tr("继续快速标注"))
+            resolution = self._resolve_dirty(self.tr("继续连续自动标注"))
         except Exception as exc:  # noqa: B902
             self._show_control_failure(exc)
             return
@@ -626,7 +782,7 @@ class FastRunUiSession(QtCore.QObject):
     def _stop(self):
         if self.controller.phase == "PAUSED":
             try:
-                resolution = self._resolve_dirty(self.tr("结束快速标注"))
+                resolution = self._resolve_dirty(self.tr("结束连续自动标注"))
             except Exception as exc:  # noqa: B902
                 self._show_control_failure(exc)
                 return
@@ -639,13 +795,15 @@ class FastRunUiSession(QtCore.QObject):
         detail = str(exc)
         QtWidgets.QMessageBox.warning(
             self.labeling_widget,
-            self.tr("无法继续快速标注"),
+            self.tr("无法继续连续自动标注"),
             f"{code}\n{detail}" if detail != code else code,
         )
 
     def _on_finished(self, summary):
         if self.controller.control_intent == "CLOSE":
             self.guard.release_for_close()
+        elif isinstance(self.guard, VisibleCanvasStateGuard):
+            self.guard.finish(bool(self.presenter.presented_image_ids))
         else:
             self.guard.restore(self.controller.modified_image_ids)
         self._reset_entry_action()
@@ -673,11 +831,11 @@ class FastRunUiSession(QtCore.QObject):
         if self.runner is not None:
             self.runner.shutdown_when_idle()
             self._connect_thread_cleanup()
-        code = getattr(exc, "code", "fast_run_start_failed")
+        code = getattr(exc, "code", "sequence_run_start_failed")
         detail = str(exc)
         QtWidgets.QMessageBox.warning(
             self.labeling_widget,
-            self.tr("无法开始快速标注"),
+            self.tr("无法开始连续自动标注"),
             f"{code}\n{detail}" if detail != code else code,
         )
         if self.runner is None or not self.runner.requires_safe_shutdown():
@@ -700,3 +858,7 @@ class FastRunUiSession(QtCore.QObject):
         if getattr(self.auto_widget, "_fast_run_session", None) is self:
             self.auto_widget._fast_run_session = None
         self.auto_widget.refresh_continuous_run_availability()
+
+
+ContinuousRunProgressDialog = FastRunProgressDialog
+ContinuousRunUiSession = FastRunUiSession

@@ -59,6 +59,15 @@ class AutoLabelingHostContextProtocol(Protocol):
     annotation_session_lease: object
 
 
+@runtime_checkable
+class SequenceRunActivationHostProtocolV1(
+    AutoLabelingHostContextProtocol,
+    Protocol,
+):
+    def activate_sequence_run(self, request):
+        pass
+
+
 def _record_value(record, field):
     if isinstance(record, dict):
         return record.get(field)

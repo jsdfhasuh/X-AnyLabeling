@@ -588,7 +588,7 @@ def run_all_images_legacy(self):
 
 
 def run_all_images(self):
-    """Route verified models to Fast and preserve the legacy batch path."""
+    """Route Ctrl+B to zero-delay sequence or preserve Legacy Batch."""
 
     auto_widget = self.auto_labeling_widget
     manager = auto_widget.model_manager

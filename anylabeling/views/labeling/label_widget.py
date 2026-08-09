@@ -5002,6 +5002,152 @@ class LabelingWidget(LabelDialog):
         if auto_widget is not None:
             auto_widget.set_images_ready(ready)
 
+    @staticmethod
+    def _sequence_record_value(record, field):
+        if isinstance(record, dict):
+            return record.get(field)
+        return getattr(record, field, None)
+
+    @staticmethod
+    def _sequence_canonical_path(path):
+        return osp.normcase(osp.realpath(osp.abspath(path)))
+
+    def begin_sequence_presentation(self, token, records_by_id):
+        if type(token) is not str or not token:
+            raise ValueError("presentation_token_invalid")
+        current = getattr(self, "_sequence_presentation_session", None)
+        if current is not None and current.get("token") != token:
+            raise ValueError("presentation_session_already_active")
+        if type(records_by_id) is not dict:
+            raise ValueError("presentation_records_invalid")
+        records = {}
+        image_paths = set()
+        label_paths = set()
+        for image_id, record in records_by_id.items():
+            if type(image_id) is not str or not image_id:
+                raise ValueError("presentation_image_identity_mismatch")
+            image_path = self._sequence_record_value(
+                record, "canonical_session_image_path"
+            )
+            label_path = self._sequence_record_value(
+                record, "canonical_session_label_path"
+            )
+            if (
+                type(image_path) is not str
+                or self._sequence_canonical_path(image_path) != image_path
+                or type(label_path) is not str
+                or self._sequence_canonical_path(label_path) != label_path
+                or image_path in image_paths
+                or label_path in label_paths
+            ):
+                raise ValueError("presentation_path_mismatch")
+            records[image_id] = (image_path, label_path)
+            image_paths.add(image_path)
+            label_paths.add(label_path)
+        self._sequence_presentation_session = {
+            "token": token,
+            "records": records,
+            "epoch": 0,
+        }
+
+    def _sequence_presentation_target(
+        self,
+        token,
+        epoch,
+        image_id,
+        image_path,
+        label_path=None,
+    ):
+        session = getattr(self, "_sequence_presentation_session", None)
+        if session is None or session.get("token") != token:
+            raise ValueError("presentation_token_mismatch")
+        if type(epoch) is not int or epoch <= 0:
+            raise ValueError("presentation_epoch_invalid")
+        if epoch < session["epoch"]:
+            raise ValueError("presentation_epoch_stale")
+        target = session["records"].get(image_id)
+        if target is None or target[0] != self._sequence_canonical_path(
+            image_path
+        ):
+            raise ValueError("presentation_image_identity_mismatch")
+        if label_path is not None and target[
+            1
+        ] != self._sequence_canonical_path(label_path):
+            raise ValueError("presentation_path_mismatch")
+        session["epoch"] = epoch
+        return target
+
+    def load_sequence_image_for_presentation(
+        self, token, epoch, image_id, image_path
+    ):
+        target_image, _target_label = self._sequence_presentation_target(
+            token, epoch, image_id, image_path
+        )
+        matches = [
+            (index, path)
+            for index, path in enumerate(self.image_list)
+            if self._sequence_canonical_path(path) == target_image
+        ]
+        if len(matches) != 1:
+            raise ValueError("presentation_image_identity_mismatch")
+        index, listed_path = matches[0]
+        if self.fn_to_index.get(str(listed_path)) != index:
+            raise ValueError("presentation_file_index_mismatch")
+        blocker = QtCore.QSignalBlocker(self.file_list_widget)
+        keep_prev = self._config.get("keep_prev", False)
+        try:
+            self.file_list_widget.setCurrentRow(index)
+            self._config["keep_prev"] = False
+            loaded = self.load_file(target_image)
+        finally:
+            self._config["keep_prev"] = keep_prev
+            del blocker
+        if not loaded or (
+            self._sequence_canonical_path(self.filename) != target_image
+            or self.file_list_widget.currentRow() != index
+        ):
+            return False
+        self.canvas.shapes_backups = []
+        self.actions.undo.setEnabled(False)
+        self.set_clean()
+        return True
+
+    def present_committed_sequence_document(
+        self,
+        token,
+        epoch,
+        image_id,
+        image_path,
+        label_path,
+    ):
+        _target_image, target_label = self._sequence_presentation_target(
+            token,
+            epoch,
+            image_id,
+            image_path,
+            label_path,
+        )
+        if not self.load_sequence_image_for_presentation(
+            token, epoch, image_id, image_path
+        ):
+            return False
+        if (
+            self._sequence_canonical_path(self.get_label_file())
+            != target_label
+        ):
+            raise ValueError("presentation_path_mismatch")
+        self.canvas.shapes_backups = []
+        self.actions.undo.setEnabled(False)
+        self.set_clean()
+        return True
+
+    def end_sequence_presentation(self, token):
+        session = getattr(self, "_sequence_presentation_session", None)
+        if session is None or session.get("token") != token:
+            return False
+        self._sequence_presentation_session = None
+        return True
+
     def clear_auto_labeling_host_context(self):
         context = self.auto_labeling_host_context
         self.auto_labeling_host_context = None

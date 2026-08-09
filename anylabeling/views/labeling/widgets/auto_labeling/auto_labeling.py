@@ -425,21 +425,29 @@ class AutoLabelingWidget(QWidget):
             )
 
     def run_continuous_auto_labeling(self):
+        opener = getattr(self, "open_continuous_auto_labeling", None)
+        if callable(opener):
+            return opener(initial_delay=None)
+        # Preserve direct Phase 4 mock calls that only provide ``parent``.
         from anylabeling.views.labeling.utils.batch import run_all_images
 
         return run_all_images(self.parent)
 
-    def open_continuous_auto_labeling(self):
+    def open_continuous_auto_labeling(self, initial_delay=0.0):
         if self._fast_run_session is not None:
             self.model_manager.new_model_status.emit(
                 self.tr("连续自动标注已在运行。")
             )
             return False
         from anylabeling.views.labeling.widgets.auto_labeling_run_dialog import (
-            FastRunUiSession,
+            ContinuousRunUiSession,
         )
 
-        session = FastRunUiSession(self.parent, self)
+        session = ContinuousRunUiSession(
+            self.parent,
+            self,
+            initial_delay=initial_delay,
+        )
         self._fast_run_session = session
         self.refresh_continuous_run_availability()
         return session.begin()

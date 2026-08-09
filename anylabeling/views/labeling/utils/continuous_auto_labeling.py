@@ -1,9 +1,10 @@
-"""Event-driven Phase 4 zero-delay continuous auto-labeling controller."""
+"""Event-driven Fast and Visible continuous auto-labeling controller."""
 
 import copy
 import hashlib
 import os
 import threading
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -26,7 +27,11 @@ from anylabeling.views.labeling.utils.auto_labeling_run_store import (
     InMemoryCommitStoreV1,
 )
 
-from .auto_labeling_sequence import FastRunOptionsV1, thaw_json
+from .auto_labeling_sequence import (
+    FastRunOptionsV1,
+    SequenceRunOptionsV1,
+    thaw_json,
+)
 
 
 _INTENT_PRIORITY = {"NONE": 0, "PAUSE": 1, "STOP": 2, "CLOSE": 3}
@@ -36,6 +41,19 @@ _INPUT_FAILURE_CODES = {
     "exif_not_normalized",
     "session_image_path_escape",
     "session_image_symlink",
+}
+_PRESENTATION_ERROR_CODES = {
+    "presentation_label_missing",
+    "presentation_document_invalid",
+    "presentation_document_digest_mismatch",
+    "presentation_semantic_digest_mismatch",
+    "presentation_image_identity_mismatch",
+    "presentation_path_mismatch",
+    "presentation_token_mismatch",
+    "presentation_epoch_invalid",
+    "presentation_epoch_stale",
+    "presentation_file_index_mismatch",
+    "presentation_image_load_failed",
 }
 
 
@@ -257,14 +275,14 @@ def _reject_standalone_shadow_labels(path_entries, output_dir):
             raise LabelConflictError("conflict_shadow_label", sibling_path)
 
 
-def create_standalone_fast_activation_v1(
+def create_standalone_sequence_activation_v1(
     image_paths,
     options,
     *,
     output_dir=None,
 ):
-    if not isinstance(options, FastRunOptionsV1):
-        raise TypeError("options must be FastRunOptionsV1")
+    if not isinstance(options, SequenceRunOptionsV1):
+        raise TypeError("options must be SequenceRunOptionsV1")
     if options.workset_source != "CURRENT_FILE_LIST_SNAPSHOT":
         raise FastControllerError("standalone_workset_source_invalid")
     paths = [_canonical(path) for path in image_paths]
@@ -369,7 +387,7 @@ def create_standalone_fast_activation_v1(
         "run_id": run_id,
         "project_id": None,
         "workset_source": "CURRENT_FILE_LIST_SNAPSHOT",
-        "delay_seconds": 0.0,
+        "delay_seconds": options.delay_seconds,
         "range": options.range,
         "filter": options.filter,
         "write_policy": options.write_policy,
@@ -381,6 +399,21 @@ def create_standalone_fast_activation_v1(
         run_store=InMemoryFastRunStoreV1(config, queue, state, items),
         commit_store=InMemoryCommitStoreV1(),
         records_by_id=by_id,
+    )
+
+
+def create_standalone_fast_activation_v1(
+    image_paths,
+    options,
+    *,
+    output_dir=None,
+):
+    if not isinstance(options, FastRunOptionsV1):
+        raise TypeError("options must be FastRunOptionsV1")
+    return create_standalone_sequence_activation_v1(
+        image_paths,
+        options,
+        output_dir=output_dir,
     )
 
 
@@ -472,10 +505,215 @@ def read_fast_run_summary_v1(run_store, run_id):
     raise FastControllerError("fast_run_summary_snapshot_unstable")
 
 
-class FastAutoLabelingController(QtCore.QObject):
+class _QtPresentationTimer:
+    def __init__(self, parent):
+        self._timer = QtCore.QTimer(parent)
+        self._timer.setSingleShot(True)
+        self._epoch = None
+        self._callback = None
+        self._timer.timeout.connect(self._on_timeout)
+
+    def start(self, milliseconds, epoch, callback):
+        self.stop()
+        self._epoch = epoch
+        self._callback = callback
+        self._timer.start(max(0, int(milliseconds)))
+
+    def stop(self):
+        self._timer.stop()
+        self._epoch = None
+        self._callback = None
+
+    def is_active(self):
+        return self._timer.isActive()
+
+    def _on_timeout(self):
+        epoch = self._epoch
+        callback = self._callback
+        self._epoch = None
+        self._callback = None
+        if callable(callback):
+            callback(epoch)
+
+
+class LabelingWidgetSequencePresenter:
+    """Validate committed facts before controlled canvas presentation."""
+
+    def __init__(self, labeling_widget):
+        self.widget = labeling_widget
+        self.token = None
+        self.records_by_id = {}
+        self.presented_image_ids = []
+
+    def activate(self, token, records_by_id):
+        if self.token is not None:
+            raise FastControllerError("presentation_session_already_active")
+        if type(token) is not str or not token:
+            raise FastControllerError("presentation_token_invalid")
+        self.token = token
+        self.records_by_id = dict(records_by_id)
+        begin = getattr(self.widget, "begin_sequence_presentation", None)
+        if not callable(begin):
+            raise FastControllerError("presentation_adapter_unavailable")
+        try:
+            begin(token, self.records_by_id)
+        except Exception as exc:
+            raise self._normalize_error(
+                exc,
+                "presentation_document_invalid",
+            ) from exc
+
+    @staticmethod
+    def _normalize_error(exc, fallback):
+        if isinstance(exc, FastControllerError):
+            return exc
+        code = str(exc)
+        if code not in _PRESENTATION_ERROR_CODES:
+            code = fallback
+        return FastControllerError(code, str(exc))
+
+    @staticmethod
+    def _file_sha256(path):
+        digest = hashlib.sha256()
+        try:
+            with open(path, "rb") as stream:
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+        except OSError as exc:
+            raise FastControllerError(
+                "presentation_image_identity_mismatch", str(exc)
+            ) from exc
+        return digest.hexdigest()
+
+    def _target(self, token, image_id):
+        if token != self.token:
+            raise FastControllerError("presentation_token_mismatch")
+        record = self.records_by_id.get(image_id)
+        if record is None:
+            raise FastControllerError("presentation_image_identity_mismatch")
+        image_path = _record_value(record, "canonical_session_image_path")
+        label_path = _record_value(record, "canonical_session_label_path")
+        if (
+            type(image_path) is not str
+            or _canonical(image_path) != image_path
+            or type(label_path) is not str
+            or _canonical(label_path) != label_path
+        ):
+            raise FastControllerError("presentation_path_mismatch")
+        return record, image_path, label_path
+
+    def load(self, token, epoch, image_id, expected_image_digest=None):
+        _record, image_path, _label_path = self._target(token, image_id)
+        if expected_image_digest is not None and (
+            self._file_sha256(image_path) != expected_image_digest
+        ):
+            raise FastControllerError("presentation_image_identity_mismatch")
+        load = getattr(
+            self.widget, "load_sequence_image_for_presentation", None
+        )
+        if not callable(load):
+            raise FastControllerError("presentation_image_load_failed")
+        try:
+            loaded = load(token, epoch, image_id, image_path)
+        except Exception as exc:
+            raise self._normalize_error(
+                exc,
+                "presentation_image_load_failed",
+            ) from exc
+        if not loaded:
+            raise FastControllerError("presentation_image_load_failed")
+
+    def _validated_document(
+        self,
+        token,
+        image_id,
+        item,
+        expected_image_digest,
+    ):
+        _record, image_path, label_path = self._target(token, image_id)
+        if item.get("image_id") != image_id:
+            raise FastControllerError("presentation_image_identity_mismatch")
+        if expected_image_digest is not None and (
+            self._file_sha256(image_path) != expected_image_digest
+        ):
+            raise FastControllerError("presentation_image_identity_mismatch")
+        current = resolve_existing_label(label_path)
+        if current.presence == "MISSING":
+            raise FastControllerError("presentation_label_missing")
+        if current.presence not in {"VALID_EMPTY", "VALID_NONEMPTY"}:
+            raise FastControllerError("presentation_document_invalid")
+        digests = item.get("digests") or {}
+        if current.document_digest != digests.get("staged_document_digest"):
+            raise FastControllerError("presentation_document_digest_mismatch")
+        if current.semantic_digest != digests.get("staged_annotation_digest"):
+            raise FastControllerError("presentation_semantic_digest_mismatch")
+        return current, image_path, label_path
+
+    def present(
+        self,
+        token,
+        epoch,
+        image_id,
+        item,
+        expected_image_digest=None,
+    ):
+        before, image_path, label_path = self._validated_document(
+            token, image_id, item, expected_image_digest
+        )
+        present = getattr(
+            self.widget, "present_committed_sequence_document", None
+        )
+        if not callable(present):
+            raise FastControllerError("presentation_document_invalid")
+        try:
+            presented = present(
+                token,
+                epoch,
+                image_id,
+                image_path,
+                label_path,
+            )
+        except Exception as exc:
+            raise self._normalize_error(
+                exc,
+                "presentation_document_invalid",
+            ) from exc
+        if not presented:
+            raise FastControllerError("presentation_document_invalid")
+        after, _image_path, _label_path = self._validated_document(
+            token, image_id, item, expected_image_digest
+        )
+        if (
+            after.document_digest != before.document_digest
+            or after.semantic_digest != before.semantic_digest
+            or bool(getattr(self.widget, "dirty", False))
+        ):
+            raise FastControllerError("presentation_document_digest_mismatch")
+        self.presented_image_ids.append(image_id)
+        return copy.deepcopy(after.document)
+
+    def revalidate(self, token, image_id, item, expected_image_digest=None):
+        self._validated_document(token, image_id, item, expected_image_digest)
+
+    def deactivate(self, token):
+        if token != self.token:
+            return False
+        end = getattr(self.widget, "end_sequence_presentation", None)
+        if callable(end):
+            end(token)
+        self.token = None
+        self.records_by_id = {}
+        return True
+
+
+class ContinuousAutoLabelingController(QtCore.QObject):
     state_changed = QtCore.pyqtSignal(str)
     progress_changed = QtCore.pyqtSignal(object)
     waiting_error = QtCore.pyqtSignal(object)
+    presentation_ready = QtCore.pyqtSignal(object)
     finished = QtCore.pyqtSignal(object)
     safe_to_close = QtCore.pyqtSignal(int)
 
@@ -492,18 +730,28 @@ class FastAutoLabelingController(QtCore.QObject):
         standalone_output_dir=None,
         context_replacer=None,
         pose_config=None,
+        presentation_adapter=None,
+        presentation_timer=None,
+        monotonic_ns=None,
         created_by_app_version=__version__,
     ):
         super().__init__()
-        if not isinstance(options, FastRunOptionsV1):
-            raise TypeError("options must be FastRunOptionsV1")
+        if not isinstance(options, SequenceRunOptionsV1):
+            raise TypeError("options must be SequenceRunOptionsV1")
         self.runner = runner
         self.options = options
+        self.execution_mode = options.execution_mode
         self.host_context = host_context
         self.standalone_image_paths = tuple(standalone_image_paths)
         self.standalone_output_dir = standalone_output_dir
         self.context_replacer = context_replacer
         self.pose_config = copy.deepcopy(pose_config)
+        self.presentation_adapter = presentation_adapter
+        self.presentation_token = str(uuid.uuid4())
+        self._presentation_timer = presentation_timer or _QtPresentationTimer(
+            self
+        )
+        self._monotonic_ns = monotonic_ns or time.monotonic_ns
         self.created_by_app_version = created_by_app_version
 
         self.run_id = None
@@ -528,6 +776,22 @@ class FastAutoLabelingController(QtCore.QObject):
         self._safe_generation = None
         self._live_summary = None
         self._item_contributions = {}
+        self.current_presentation_image_id = None
+        self.current_presentation_epoch = 0
+        self.presentation_epoch = 0
+        self.timer_epoch = 0
+        self.delay_seconds = options.delay_seconds
+        self.deadline_monotonic = None
+        self.remaining_seconds = options.delay_seconds
+        self.presentation_ready_seen = False
+        self.runner_idle_seen = True
+        self.timer_expired = False
+        self._loading_epoch = 0
+        self._loading_image_id = None
+        self._loading_attempt_id = None
+        self._countdown_timer = QtCore.QTimer(self)
+        self._countdown_timer.setInterval(200)
+        self._countdown_timer.timeout.connect(self._emit_countdown_progress)
 
         self.runner.outcome_ready.connect(self._on_outcome_ready)
         self.runner.runner_idle.connect(self._on_runner_idle)
@@ -537,6 +801,11 @@ class FastAutoLabelingController(QtCore.QObject):
     def start(self):
         if self._started or self._finished:
             return False
+        if (
+            self.execution_mode == "VISIBLE"
+            and self.presentation_adapter is None
+        ):
+            raise FastControllerError("presentation_adapter_unavailable")
         lease = getattr(self.runner.model_manager, "inference_lease", None)
         if bool(getattr(lease, "is_active", False)):
             raise FastControllerError("inference_lease_busy")
@@ -550,15 +819,18 @@ class FastAutoLabelingController(QtCore.QObject):
             if not self.runner.start():
                 raise FastControllerError("prediction_runner_start_failed")
             self._runner_started_here = True
+            initial_phase = (
+                "INFERENCING" if self.execution_mode == "FAST" else "LOADING"
+            )
             self._set_run_state(
                 processing_status="RUNNING",
                 review_progress="NOT_STARTED",
-                phase="INFERENCING",
+                phase=initial_phase,
                 control_intent="NONE",
                 last_error=None,
             )
             self._started = True
-            self._set_phase("INFERENCING")
+            self._set_phase(initial_phase)
             self._dispatch_next()
             return True
         except Exception as exc:
@@ -580,11 +852,13 @@ class FastAutoLabelingController(QtCore.QObject):
                 self._active_manager_ids.discard(self._manager_key)
             if self._runner_started_here:
                 self.runner.shutdown_when_idle()
+            if self.presentation_adapter is not None:
+                self.presentation_adapter.deactivate(self.presentation_token)
             raise
 
     def _activate_run(self):
         if self.host_context is None:
-            activation = create_standalone_fast_activation_v1(
+            activation = create_standalone_sequence_activation_v1(
                 self.standalone_image_paths,
                 self.options,
                 output_dir=self.standalone_output_dir,
@@ -593,11 +867,14 @@ class FastAutoLabelingController(QtCore.QObject):
             self.run_store = activation.run_store
             self.commit_store = activation.commit_store
             self.records_by_id = activation.records_by_id
-            return self._load_queue()
+            self._load_queue()
+            return self._activate_presenter()
 
         if not bool(getattr(self.host_context, "images_ready", False)):
             raise FastControllerError("images_not_ready")
-        activate = getattr(self.host_context, "activate_fast_run", None)
+        activate = getattr(self.host_context, "activate_sequence_run", None)
+        if not callable(activate) and self.execution_mode == "FAST":
+            activate = getattr(self.host_context, "activate_fast_run", None)
         if not callable(activate):
             raise FastControllerError("host_activation_service_unavailable")
         request = self.options.activation_request(
@@ -619,6 +896,15 @@ class FastAutoLabelingController(QtCore.QObject):
         if callable(self.context_replacer):
             self.context_replacer(bound_context)
         self._load_queue()
+        self._activate_presenter()
+
+    def _activate_presenter(self):
+        if self.execution_mode != "VISIBLE":
+            return
+        activate = getattr(self.presentation_adapter, "activate", None)
+        if not callable(activate):
+            raise FastControllerError("presentation_adapter_unavailable")
+        activate(self.presentation_token, self.records_by_id)
 
     def _load_queue(self):
         queue = self.run_store.read_queue(self.run_id)
@@ -748,10 +1034,6 @@ class FastAutoLabelingController(QtCore.QObject):
         )
         if isinstance(self.commit_store, InMemoryCommitStoreV1):
             self.commit_store.begin_attempt(image_id, attempt_id)
-        self._set_run_state(
-            cursor_sequence=updated["sequence"],
-            phase="INFERENCING",
-        )
         parameters = thaw_json(self.options.parameter_snapshot)
         image_path = _record_value(record, "canonical_session_image_path")
         expected = _record_value(record, "source_image_digest") or None
@@ -780,14 +1062,129 @@ class FastAutoLabelingController(QtCore.QObject):
             existing_shapes_input=[],
             delivery_mode="RETURN_ONLY",
         )
+        if self.execution_mode == "VISIBLE":
+            self.presentation_epoch += 1
+            epoch = self.presentation_epoch
+            self.current_presentation_epoch = epoch
+            self.current_presentation_image_id = image_id
+            self._loading_epoch = epoch
+            self._loading_image_id = image_id
+            self._loading_attempt_id = attempt_id
+            self.runner_idle_seen = True
+            self._set_run_state(
+                cursor_sequence=updated["sequence"],
+                phase="LOADING",
+            )
+            self._set_phase("LOADING")
+            try:
+                self.presentation_adapter.load(
+                    self.presentation_token,
+                    epoch,
+                    image_id,
+                    expected,
+                )
+            except Exception as exc:
+                self._hard_fail(
+                    getattr(exc, "code", "presentation_image_load_failed"),
+                    str(exc),
+                )
+                return
+            QtCore.QTimer.singleShot(
+                0,
+                lambda epoch=epoch, request=request: self._submit_loaded_item(
+                    epoch, request
+                ),
+            )
+            self._emit_progress(image_id)
+            return
+        self._set_run_state(
+            cursor_sequence=updated["sequence"],
+            phase="INFERENCING",
+        )
+        self._submit_request(request)
+
+    def _submit_request(self, request):
+        self.runner_idle_seen = False
+        self._set_run_state(phase="INFERENCING")
+        self._set_phase("INFERENCING")
         self.active_request = request
         if not self.runner.submit(request):
             self.active_request = None
-            self._hard_fail("prediction_submit_rejected", image_id)
+            self.runner_idle_seen = True
+            self._hard_fail("prediction_submit_rejected", request.image_id)
             return
         # Publish the active filename and total before a long inference ends.
         # Completion and the next admission still remain gated by runner_idle.
-        self._emit_progress(image_id)
+        self._emit_progress(request.image_id)
+
+    def _cancel_loading_attempt(self, reason):
+        image_id = self._loading_image_id
+        attempt_id = self._loading_attempt_id
+        if image_id is None or attempt_id is None:
+            return
+        item = self.run_store.read_item(self.run_id, image_id)
+        if (
+            item["execution_status"] == "running"
+            and item["latest_attempt_id"] == attempt_id
+        ):
+            attempts = copy.deepcopy(item["prediction_attempts"])
+            for attempt in reversed(attempts):
+                if attempt.get("attempt_id") == attempt_id:
+                    attempt.update(
+                        ended_at=_utc_now(),
+                        status="cancelled_before_submit",
+                        error_code=reason,
+                        error_message=None,
+                    )
+                    break
+            self._track_item(
+                self.run_store.update_item(
+                    self.run_id,
+                    image_id,
+                    item["item_revision"],
+                    {
+                        "execution_status": "queued",
+                        "failure_resolution": "not_applicable",
+                        "prediction_attempts": attempts,
+                    },
+                )
+            )
+        self._loading_attempt_id = None
+
+    def _submit_loaded_item(self, epoch, request):
+        if (
+            self._finished
+            or epoch != self._loading_epoch
+            or request.image_id != self._loading_image_id
+            or request.attempt_id != self._loading_attempt_id
+        ):
+            return
+        try:
+            if self.hard_error is not None:
+                self._cancel_loading_attempt("hard_failure")
+                return
+            if self.control_intent in {"STOP", "CLOSE"}:
+                self._cancel_loading_attempt("control_stop")
+                self._loading_image_id = None
+                self._finalize("stopped")
+                return
+            if self.control_intent == "PAUSE":
+                self._cancel_loading_attempt("control_pause")
+                self._set_run_state(
+                    processing_status="PAUSED",
+                    phase="PAUSED",
+                    control_intent="PAUSE",
+                )
+                self._set_phase("PAUSED")
+                return
+            self._loading_image_id = None
+            self._loading_attempt_id = None
+            self._submit_request(request)
+        except Exception as exc:  # noqa: B902
+            self._hard_fail(
+                getattr(exc, "code", "visible_loading_checkpoint_failed"),
+                str(exc),
+            )
 
     @QtCore.pyqtSlot(object)
     def _on_outcome_ready(self, outcome):
@@ -877,19 +1274,180 @@ class FastAutoLabelingController(QtCore.QObject):
             )
             if isinstance(self.commit_store, InMemoryCommitStoreV1):
                 self._sync_standalone_commit(request.image_id)
-            self._finish_attempt(request, "succeeded", None, None)
+            committed_item = self._finish_attempt(
+                request, "succeeded", None, None
+            )
             if result.composition.action != "skipped":
                 self.modified_image_ids.add(request.image_id)
             self._emit_progress(request.image_id)
+            if (
+                self.execution_mode == "VISIBLE"
+                and result.composition.action != "skipped"
+                and committed_item["execution_status"] == "succeeded"
+            ):
+                self._begin_presentation(
+                    request.image_id,
+                    committed_item,
+                    payload.source_image_digest,
+                )
         except LabelConflictError as exc:
             if isinstance(self.commit_store, InMemoryCommitStoreV1):
                 self._sync_standalone_commit(request.image_id)
             self._finish_attempt(request, "conflict", exc.code, str(exc))
+            if self.execution_mode == "VISIBLE":
+                self._clear_presentation_state()
             self._emit_progress(request.image_id)
         except Exception as exc:  # noqa: B902
             self._hard_fail(
                 getattr(exc, "code", "commit_handler_failed"), str(exc)
             )
+
+    def _begin_presentation(self, image_id, item, expected_image_digest):
+        epoch = self.current_presentation_epoch
+        if epoch <= 0 or image_id != self.current_presentation_image_id:
+            raise FastControllerError(
+                "presentation_image_identity_mismatch", image_id
+            )
+        self.presentation_adapter.present(
+            self.presentation_token,
+            epoch,
+            image_id,
+            item,
+            expected_image_digest,
+        )
+        self.presentation_ready_seen = False
+        self.timer_expired = False
+        self.remaining_seconds = self.delay_seconds
+        self.deadline_monotonic = None
+        self._set_run_state(phase="PRESENTING")
+        self._set_phase("PRESENTING")
+        self._emit_progress(image_id)
+        QtCore.QTimer.singleShot(
+            0,
+            lambda epoch=epoch: self._mark_presentation_ready(epoch),
+        )
+
+    def _mark_presentation_ready(self, epoch):
+        if (
+            self._finished
+            or self.hard_error is not None
+            or epoch != self.current_presentation_epoch
+            or self.current_presentation_image_id is None
+        ):
+            return
+        try:
+            self.presentation_ready_seen = True
+            if self.control_intent == "PAUSE":
+                self._invalidate_presentation_timer(preserve_remaining=True)
+                self.remaining_seconds = self.delay_seconds
+                self._set_run_state(
+                    processing_status="PAUSED",
+                    phase="PAUSED",
+                    control_intent="PAUSE",
+                )
+                self._set_phase("PAUSED")
+            elif self.control_intent in {"STOP", "CLOSE"}:
+                self._invalidate_presentation_timer()
+                if self.runner_idle_seen:
+                    self._finalize("stopped")
+            else:
+                self._arm_presentation_timer(self.delay_seconds)
+            self.presentation_ready.emit(
+                {
+                    "image_id": self.current_presentation_image_id,
+                    "presentation_epoch": epoch,
+                    "timer_epoch": self.timer_epoch,
+                    "delay_seconds": self.delay_seconds,
+                }
+            )
+            self._emit_progress(self.current_presentation_image_id)
+        except Exception as exc:  # noqa: B902
+            self._hard_fail(
+                getattr(exc, "code", "presentation_timer_start_failed"),
+                str(exc),
+            )
+
+    def _arm_presentation_timer(self, seconds):
+        seconds = max(0.0, float(seconds))
+        self.timer_epoch += 1
+        epoch = self.timer_epoch
+        self.remaining_seconds = seconds
+        self.deadline_monotonic = self._monotonic_ns() + int(
+            seconds * 1_000_000_000
+        )
+        self.timer_expired = False
+        milliseconds = int(seconds * 1000.0 + 0.999)
+        self._presentation_timer.start(
+            milliseconds,
+            epoch,
+            self._on_presentation_timeout,
+        )
+        if seconds > 0.0:
+            self._countdown_timer.start()
+
+    def _remaining_from_deadline(self):
+        if self.deadline_monotonic is None:
+            return max(0.0, float(self.remaining_seconds))
+        remaining_ns = self.deadline_monotonic - self._monotonic_ns()
+        return max(0.0, remaining_ns / 1_000_000_000.0)
+
+    def _invalidate_presentation_timer(self, preserve_remaining=False):
+        if preserve_remaining:
+            self.remaining_seconds = self._remaining_from_deadline()
+        self.timer_epoch += 1
+        self._presentation_timer.stop()
+        self._countdown_timer.stop()
+        self.deadline_monotonic = None
+        if not preserve_remaining:
+            self.remaining_seconds = 0.0
+
+    def _on_presentation_timeout(self, epoch):
+        if (
+            self._finished
+            or epoch != self.timer_epoch
+            or not self.presentation_ready_seen
+        ):
+            return
+        remaining = self._remaining_from_deadline()
+        if remaining > 0.0:
+            self.remaining_seconds = remaining
+            self._presentation_timer.start(
+                int(remaining * 1000.0 + 0.999),
+                epoch,
+                self._on_presentation_timeout,
+            )
+            return
+        self._presentation_timer.stop()
+        self._countdown_timer.stop()
+        self.deadline_monotonic = None
+        self.remaining_seconds = 0.0
+        self.timer_expired = True
+        if self.current_presentation_image_id is not None:
+            self._emit_progress(self.current_presentation_image_id)
+        self._continue_after_presentation()
+
+    def _emit_countdown_progress(self):
+        if self.phase != "PRESENTING":
+            return
+        self.remaining_seconds = self._remaining_from_deadline()
+        if self.current_presentation_image_id is not None:
+            self._emit_progress(self.current_presentation_image_id)
+
+    def _continue_after_presentation(self):
+        if (
+            self.execution_mode != "VISIBLE"
+            or not self.timer_expired
+            or not self.runner_idle_seen
+            or self.control_intent != "NONE"
+            or self.hard_error is not None
+        ):
+            return
+        self.current_presentation_image_id = None
+        self.presentation_ready_seen = False
+        self.timer_expired = False
+        self._set_run_state(phase="INFERENCING")
+        self._set_phase("INFERENCING")
+        self._dispatch_next()
 
     def _handle_failure(self, outcome):
         code = outcome.error_code
@@ -898,12 +1456,16 @@ class FastAutoLabelingController(QtCore.QObject):
             self._finish_attempt(
                 request, "conflict", code, outcome.error_message
             )
+            if self.execution_mode == "VISIBLE":
+                self._clear_presentation_state()
             self._emit_progress(request.image_id)
             return
         if code in _INPUT_FAILURE_CODES:
             self._finish_attempt(
                 request, "failed_input", code, outcome.error_message
             )
+            if self.execution_mode == "VISIBLE":
+                self._clear_presentation_state()
             self._emit_progress(request.image_id)
             return
         self._finish_attempt(
@@ -922,6 +1484,12 @@ class FastAutoLabelingController(QtCore.QObject):
         if self.control_intent == "PAUSE":
             return
         self._publish_waiting_error()
+
+    def _clear_presentation_state(self):
+        self._invalidate_presentation_timer()
+        self.current_presentation_image_id = None
+        self.presentation_ready_seen = False
+        self.timer_expired = False
 
     def _publish_waiting_error(self):
         if self.waiting_image_id is None or self.waiting_error_details is None:
@@ -1014,6 +1582,13 @@ class FastAutoLabelingController(QtCore.QObject):
         summary.update(
             processing_status=state.get("processing_status"),
             review_progress=state.get("review_progress"),
+            phase=self.phase,
+            execution_mode=self.execution_mode,
+            delay_seconds=self.delay_seconds,
+            remaining_seconds=round(
+                max(0.0, float(self.remaining_seconds)), 3
+            ),
+            presentation_epoch=self.current_presentation_epoch,
             image_id=image_id,
             current_filename=os.path.basename(image_path or ""),
             processed=len(self.queue_entries)
@@ -1031,11 +1606,20 @@ class FastAutoLabelingController(QtCore.QObject):
             return
         try:
             self.active_request = None
+            self.runner_idle_seen = True
             if self.hard_error is not None:
                 self._finalize("failed")
             elif self.control_intent in {"CLOSE", "STOP"}:
                 self._finalize("stopped")
             elif self.control_intent == "PAUSE":
+                if (
+                    self.execution_mode == "VISIBLE"
+                    and self.presentation_ready_seen
+                    and self.phase == "PRESENTING"
+                ):
+                    self._invalidate_presentation_timer(
+                        preserve_remaining=True
+                    )
                 self._set_run_state(
                     processing_status="PAUSED",
                     phase="PAUSED",
@@ -1043,7 +1627,14 @@ class FastAutoLabelingController(QtCore.QObject):
                 )
                 self._set_phase("PAUSED")
             elif self.waiting_image_id is None:
-                self._dispatch_next()
+                if (
+                    self.execution_mode == "VISIBLE"
+                    and self.current_presentation_image_id is not None
+                ):
+                    if self.presentation_ready_seen:
+                        self._continue_after_presentation()
+                else:
+                    self._dispatch_next()
         except Exception as exc:  # noqa: B902
             self._hard_fail(
                 getattr(exc, "code", "controller_idle_failed"), str(exc)
@@ -1055,6 +1646,12 @@ class FastAutoLabelingController(QtCore.QObject):
 
     def _hard_fail(self, code, detail=""):
         if self.hard_error is None:
+            self._invalidate_presentation_timer()
+            if self._loading_attempt_id is not None:
+                try:
+                    self._cancel_loading_attempt("hard_failure")
+                except Exception:
+                    pass
             self.hard_error = {"code": code, "message": str(detail or "")}
             self.runner.request_stop()
             try:
@@ -1080,10 +1677,37 @@ class FastAutoLabelingController(QtCore.QObject):
         self.runner.request_pause()
         try:
             self._set_run_state(control_intent=self.control_intent)
+            if self.waiting_image_id is not None and self.runner.is_idle():
+                self._set_run_state(
+                    processing_status="PAUSED",
+                    phase="PAUSED",
+                    control_intent="PAUSE",
+                )
+                self._set_phase("PAUSED")
+                self._emit_progress(self.waiting_image_id)
+                return True
+            if (
+                self.execution_mode == "VISIBLE"
+                and self.phase == "PRESENTING"
+                and self.presentation_ready_seen
+            ):
+                self._invalidate_presentation_timer(preserve_remaining=True)
+                self._set_run_state(
+                    processing_status="PAUSED",
+                    phase="PAUSED",
+                    control_intent="PAUSE",
+                )
+                self._set_phase("PAUSED")
+                self._emit_progress(self.current_presentation_image_id)
+                return True
         except Exception as exc:  # noqa: B902
             self._hard_fail("control_checkpoint_failed", str(exc))
             return False
-        if self.runner.is_idle() and self.waiting_image_id is None:
+        if (
+            self.runner.is_idle()
+            and self.waiting_image_id is None
+            and self._loading_attempt_id is None
+        ):
             self._on_runner_idle(self.runner.generation)
         return True
 
@@ -1105,6 +1729,49 @@ class FastAutoLabelingController(QtCore.QObject):
                     control_intent="NONE",
                 )
                 self._publish_waiting_error()
+            elif (
+                self.execution_mode == "VISIBLE"
+                and self._loading_image_id is not None
+                and self._loading_attempt_id is None
+            ):
+                image_id = self._loading_image_id
+                self._loading_image_id = None
+                self._set_run_state(
+                    processing_status="RUNNING",
+                    phase="LOADING",
+                    control_intent="NONE",
+                )
+                self._set_phase("LOADING")
+                self._dispatch_item(
+                    self.run_store.read_item(self.run_id, image_id)
+                )
+            elif (
+                self.execution_mode == "VISIBLE"
+                and self.presentation_ready_seen
+                and self.current_presentation_image_id is not None
+            ):
+                image_id = self.current_presentation_image_id
+                item = self.run_store.read_item(self.run_id, image_id)
+                record = self.records_by_id[image_id]
+                expected = _record_value(record, "source_image_digest") or None
+                self.presentation_adapter.revalidate(
+                    self.presentation_token,
+                    image_id,
+                    item,
+                    expected,
+                )
+                self._set_run_state(
+                    processing_status="RUNNING",
+                    phase="PRESENTING",
+                    control_intent="NONE",
+                )
+                self._set_phase("PRESENTING")
+                QtCore.QTimer.singleShot(
+                    0,
+                    lambda remaining=self.remaining_seconds: (
+                        self._resume_presentation_timer(remaining)
+                    ),
+                )
             else:
                 self._set_run_state(
                     processing_status="RUNNING",
@@ -1117,6 +1784,17 @@ class FastAutoLabelingController(QtCore.QObject):
             self._hard_fail("control_checkpoint_failed", str(exc))
             return False
         return True
+
+    def _resume_presentation_timer(self, remaining):
+        if (
+            self._finished
+            or self.control_intent != "NONE"
+            or self.phase != "PRESENTING"
+        ):
+            return
+        self._arm_presentation_timer(remaining)
+        if self.current_presentation_image_id is not None:
+            self._emit_progress(self.current_presentation_image_id)
 
     def retry_current(self):
         if self._finished or self.waiting_image_id is None:
@@ -1160,6 +1838,8 @@ class FastAutoLabelingController(QtCore.QObject):
             )
             self.waiting_image_id = None
             self.waiting_error_details = None
+            if self.execution_mode == "VISIBLE":
+                self._clear_presentation_state()
             self._set_run_state(phase="INFERENCING")
             self._set_phase("INFERENCING")
             self._emit_progress(image_id)
@@ -1178,13 +1858,18 @@ class FastAutoLabelingController(QtCore.QObject):
             return False
         if previous == "STOP":
             return True
+        if self.execution_mode == "VISIBLE":
+            self._invalidate_presentation_timer()
         self.runner.request_stop()
         try:
             self._set_run_state(control_intent=self.control_intent)
+            if self.runner.is_idle() and self._loading_attempt_id is not None:
+                self._cancel_loading_attempt("control_stop")
+                self._loading_image_id = None
         except Exception as exc:  # noqa: B902
             self._hard_fail("control_checkpoint_failed", str(exc))
             return False
-        if self.runner.is_idle():
+        if self.runner.is_idle() and self._loading_attempt_id is None:
             self._finalize("stopped")
         return True
 
@@ -1192,15 +1877,27 @@ class FastAutoLabelingController(QtCore.QObject):
         if self._safe_generation is not None:
             return self._safe_generation
         self._raise_intent("CLOSE")
+        if self.execution_mode == "VISIBLE":
+            self._invalidate_presentation_timer()
         if not self._finished:
             try:
                 self._set_run_state(control_intent="CLOSE")
+                if (
+                    self.runner.is_idle()
+                    and self._loading_attempt_id is not None
+                ):
+                    self._cancel_loading_attempt("control_close")
+                    self._loading_image_id = None
             except Exception as exc:  # noqa: B902
                 self._hard_fail("control_checkpoint_failed", str(exc))
         self._safe_generation = self.runner.request_safe_shutdown(
-            "continuous_fast_close"
+            "continuous_sequence_close"
         )
-        if not self._finished and self.runner.is_idle():
+        if (
+            not self._finished
+            and self.runner.is_idle()
+            and self._loading_attempt_id is None
+        ):
             self._finalize("stopped")
         return self._safe_generation
 
@@ -1225,6 +1922,7 @@ class FastAutoLabelingController(QtCore.QObject):
     def _finalize(self, reason):
         if self._finished:
             return
+        self._invalidate_presentation_timer()
         items = self.run_store.list_items(self.run_id)
         summary = build_fast_run_summary_v1(items)
         if reason == "failed" or self.hard_error is not None:
@@ -1238,7 +1936,14 @@ class FastAutoLabelingController(QtCore.QObject):
                 + summary["skipped_outside_range"]
                 + summary["host_prepare_failed"]
             )
-            status = "CANCELLED" if safe_results == 0 else "PARTIAL"
+            if not (
+                summary["remaining"]
+                or summary["model_failed_unresolved"]
+                or summary["conflicts"]
+            ):
+                status = "COMPLETED"
+            else:
+                status = "CANCELLED" if safe_results == 0 else "PARTIAL"
         elif (
             summary["remaining"]
             or summary["model_failed_unresolved"]
@@ -1271,9 +1976,20 @@ class FastAutoLabelingController(QtCore.QObject):
         self._set_phase("FINISHED")
         with self._registry_lock:
             self._active_manager_ids.discard(self._manager_key)
+        if self.presentation_adapter is not None:
+            self.presentation_adapter.deactivate(self.presentation_token)
         if self.control_intent != "CLOSE":
             self.runner.shutdown_when_idle()
         self.finished.emit(summary)
+
+
+class FastAutoLabelingController(ContinuousAutoLabelingController):
+    """Compatibility wrapper that accepts only Phase 4 Fast options."""
+
+    def __init__(self, runner, options, **kwargs):
+        if not isinstance(options, FastRunOptionsV1):
+            raise TypeError("options must be FastRunOptionsV1")
+        super().__init__(runner, options, **kwargs)
 
 
 class FastCanvasStateGuard:
@@ -1418,6 +2134,46 @@ class FastCanvasStateGuard:
         """Unlock without reloading before the parent's SAVE/DISCARD barrier."""
 
         self.set_running(False)
+
+
+class VisibleCanvasStateGuard(FastCanvasStateGuard):
+    """Allow controlled navigation while preserving the visible last result."""
+
+    _NAVIGATION_ACTIONS = (
+        "open_next_image",
+        "open_prev_image",
+        "open_next_unchecked_image",
+        "open_prev_unchecked_image",
+    )
+
+    def set_paused(self, paused):
+        if not paused:
+            self.set_running(True)
+            return
+        self._set_interaction_locked(False)
+        file_list = getattr(self.widget, "file_list_widget", None)
+        if file_list is not None:
+            file_list.setEnabled(False)
+        actions = getattr(self.widget, "actions", None)
+        for name in self._NAVIGATION_ACTIONS:
+            action = getattr(actions, name, None)
+            if action is not None:
+                action.setEnabled(False)
+        auto_widget = getattr(self.widget, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.setEnabled(False)
+        setattr(self.widget, "fast_auto_labeling_active", True)
+
+    def finish(self, had_presentation):
+        if not had_presentation:
+            self.restore(set())
+            return
+        self.set_running(False)
+        canvas = getattr(self.widget, "canvas", None)
+        if canvas is not None:
+            selected = getattr(canvas, "selected_shapes", None)
+            if type(selected) is list:
+                selected.clear()
 
 
 def _control_value(control, method):

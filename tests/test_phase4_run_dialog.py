@@ -53,7 +53,8 @@ class FastRunDialogTests(unittest.TestCase):
             label_text = "\n".join(
                 label.text() for label in dialog.findChildren(QtWidgets.QLabel)
             )
-            self.assertIn("0.0", label_text)
+            self.assertEqual(dialog.delay_spin.value(), 0.0)
+            self.assertFalse(dialog.delay_spin.isEnabled())
             self.assertIn("151", label_text)
             self.assertFalse(dialog.start_button.icon().isNull())
         finally:

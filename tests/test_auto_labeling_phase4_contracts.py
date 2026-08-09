@@ -99,7 +99,7 @@ class FastSequenceContractTests(unittest.TestCase):
                     {"type": model_type, "model": object()}
                 )
                 self.assertTrue(capability.supports_fast_sequence)
-                self.assertFalse(capability.supports_visible_sequence)
+                self.assertTrue(capability.supports_visible_sequence)
                 self.assertTrue(capability.single_image_independent)
                 self.assertFalse(capability.stateful_across_images)
                 self.assertTrue(capability.supports_safe_shutdown)
