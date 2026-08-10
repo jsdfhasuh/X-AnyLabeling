@@ -1,12 +1,14 @@
 import copy
 import os
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtTest, QtWidgets
+from PyQt5 import QtCore, QtTest, QtWidgets
 
 from anylabeling.views.labeling.label_widget import LabelingWidget
 from anylabeling.views.labeling.utils.auto_labeling_i18n import (
@@ -22,6 +24,24 @@ from anylabeling.views.labeling.widgets.auto_labeling_audit_dialog import (
 
 def _app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+def _wait_until(predicate, timeout_ms=3000):
+    app = _app()
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    while time.monotonic() < deadline:
+        app.processEvents(QtCore.QEventLoop.AllEvents, 20)
+        if predicate():
+            return True
+        time.sleep(0.005)
+    app.processEvents(QtCore.QEventLoop.AllEvents, 20)
+    return predicate()
+
+
+def _finish_session(session):
+    session.widget.dirty = False
+    session.finish()
+    return _wait_until(lambda: session.worker_thread is None)
 
 
 def _item(image_id, sequence, status="pending"):
@@ -48,8 +68,13 @@ class _AuditClient:
         self.list_calls = 0
         self.read_calls = 0
         self.summary_calls = 0
+        self.call_thread_ids = []
+
+    def _record_thread(self):
+        self.call_thread_ids.append(int(QtCore.QThread.currentThreadId()))
 
     def list_review_items(self):
+        self._record_thread()
         self.list_calls += 1
         reviewable = {"pending", "needs_fix", "stale"}
         return [
@@ -59,10 +84,12 @@ class _AuditClient:
         ]
 
     def read_review_item(self, image_id):
+        self._record_thread()
         self.read_calls += 1
         return copy.deepcopy(self.items[image_id])
 
     def summary(self):
+        self._record_thread()
         self.summary_calls += 1
         counts = {
             "staged_approved": 0,
@@ -82,10 +109,12 @@ class _AuditClient:
         return counts
 
     def integrity_refresh(self, image_id):
+        self._record_thread()
         self.calls.append(("refresh", image_id))
         return self.read_review_item(image_id)
 
     def approve(self, image_id, expected_revision):
+        self._record_thread()
         self.calls.append(("approve", image_id, expected_revision))
         item = self.items[image_id]
         if item["item_revision"] != expected_revision:
@@ -95,6 +124,7 @@ class _AuditClient:
         return copy.deepcopy(item)
 
     def needs_fix(self, image_id, expected_revision):
+        self._record_thread()
         self.calls.append(("needs_fix", image_id, expected_revision))
         item = self.items[image_id]
         if item["item_revision"] != expected_revision:
@@ -106,15 +136,23 @@ class _AuditClient:
 
 def _widget(items):
     widget = QtWidgets.QWidget()
-    action_names = AuditInteractionGuard._ACTION_NAMES
+    action_names = (
+        AuditInteractionGuard._ACTION_NAMES
+        + AuditInteractionGuard._TRANSACTION_ACTION_NAMES
+    )
     actions = SimpleNamespace()
-    for name in action_names:
+    for name in dict.fromkeys(action_names):
         action = QtWidgets.QAction(widget)
         action.setEnabled(True)
         setattr(actions, name, action)
     widget.actions = actions
     widget.file_list_widget = QtWidgets.QListWidget(widget)
     widget.auto_labeling_widget = QtWidgets.QWidget(widget)
+    widget.canvas = QtWidgets.QWidget(widget)
+    widget.label_list = QtWidgets.QWidget(widget)
+    widget.unique_label_list = QtWidgets.QWidget(widget)
+    widget.label_filter_combobox = QtWidgets.QWidget(widget)
+    widget.shape_dock = QtWidgets.QWidget(widget)
     widget.fn_to_index = {}
     for row, item in enumerate(
         sorted(items, key=lambda value: value["sequence"])
@@ -198,6 +236,13 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
             )
             for count in ("2", "3", "4", "5", "6"):
                 self.assertIn(count, dialog.counts_label.text())
+            dialog.set_busy(True)
+            self.assertFalse(dialog.activity_bar.isHidden())
+            self.assertFalse(dialog.approve_button.isEnabled())
+            self.assertTrue(dialog.finish_button.isEnabled())
+            dialog.set_busy(False)
+            self.assertFalse(dialog.activity_bar.isVisible())
+            self.assertTrue(dialog.approve_button.isEnabled())
         finally:
             dialog.allow_close()
             dialog.close()
@@ -214,6 +259,13 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
                 self.assertFalse(getattr(widget.actions, name).isEnabled())
             self.assertFalse(widget.file_list_widget.isEnabled())
             self.assertFalse(widget.auto_labeling_widget.isEnabled())
+
+            guard.set_transaction_busy(True)
+            self.assertFalse(widget.canvas.isEnabled())
+            self.assertFalse(widget.actions.save.isEnabled())
+            guard.set_transaction_busy(False)
+            self.assertTrue(widget.canvas.isEnabled())
+            self.assertTrue(widget.actions.save.isEnabled())
 
             guard.release()
             self.assertFalse(widget.auto_labeling_audit_active)
@@ -235,12 +287,21 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
         session = StagedAuditUiSession(widget, client)
         try:
             self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
             self.assertEqual(session.current_image_id, "image-a")
             self.assertEqual(client.list_calls, 1)
-            session.next_pending()
+            self.assertTrue(session.next_pending())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-b")
+            )
             self.assertEqual(session.current_image_id, "image-b")
             self.assertEqual(client.list_calls, 1)
-            session.previous()
+            self.assertTrue(session.previous())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
             self.assertEqual(session.current_image_id, "image-a")
             self.assertEqual(
                 widget.loaded,
@@ -251,8 +312,7 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
                 ],
             )
         finally:
-            widget.dirty = False
-            session.finish()
+            self.assertTrue(_finish_session(session))
             widget.close()
 
     def test_idle_audit_session_does_not_poll_persistent_client(self):
@@ -262,6 +322,9 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
         session = StagedAuditUiSession(widget, client)
         try:
             self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
             baseline = (
                 client.list_calls,
                 client.read_calls,
@@ -279,8 +342,7 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
                 baseline,
             )
         finally:
-            widget.dirty = False
-            session.finish()
+            self.assertTrue(_finish_session(session))
             widget.close()
 
     def test_dirty_approve_is_rejected_without_decision_or_navigation(self):
@@ -291,6 +353,9 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
         session._warn = mock.Mock()
         try:
             self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
             widget.dirty = True
             session.approve_and_next()
             self.assertEqual(session.current_image_id, "image-a")
@@ -301,8 +366,7 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
                 str(session._warn.call_args.args[0]),
             )
         finally:
-            widget.dirty = False
-            session.finish()
+            self.assertTrue(_finish_session(session))
             widget.close()
 
     def test_save_approve_orders_save_refresh_decision_and_navigation(self):
@@ -333,16 +397,21 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
         session = StagedAuditUiSession(widget, client)
         try:
             self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
             widget.dirty = True
-            session.save_approve_and_next()
+            self.assertTrue(session.save_approve_and_next())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-b")
+            )
             self.assertEqual(actions, ["save", "refresh", "approve"])
             self.assertEqual(
                 client.items["image-a"]["review_status"], "staged_approved"
             )
             self.assertEqual(session.current_image_id, "image-b")
         finally:
-            widget.dirty = False
-            session.finish()
+            self.assertTrue(_finish_session(session))
             widget.close()
 
     def test_save_approve_failure_does_not_approve_or_navigate(self):
@@ -354,6 +423,9 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
         session._warn = mock.Mock()
         try:
             self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
             widget.dirty = True
             session.save_approve_and_next()
             self.assertEqual(session.current_image_id, "image-a")
@@ -363,8 +435,111 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
             self.assertNotIn("approve", [call[0] for call in client.calls])
             session._warn.assert_called_once()
         finally:
-            widget.dirty = False
-            session.finish()
+            self.assertTrue(_finish_session(session))
+            widget.close()
+
+    def test_persistent_client_calls_run_only_on_worker_thread(self):
+        items = [_item("image-a", 0), _item("image-b", 1)]
+        client = _AuditClient(items)
+        widget = _widget(items)
+        session = StagedAuditUiSession(widget, client)
+        gui_thread_id = int(QtCore.QThread.currentThreadId())
+        try:
+            self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
+            self.assertTrue(session.approve_and_next())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-b")
+            )
+            self.assertTrue(client.call_thread_ids)
+            self.assertNotIn(gui_thread_id, client.call_thread_ids)
+            self.assertEqual(len(set(client.call_thread_ids)), 1)
+        finally:
+            self.assertTrue(_finish_session(session))
+            widget.close()
+
+    def test_blocked_write_keeps_gui_responsive_and_safe_close_waits(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        class BlockingClient(_AuditClient):
+            def approve(self, image_id, expected_revision):
+                entered.set()
+                if not release.wait(3):
+                    raise RuntimeError("test write timeout")
+                return super().approve(image_id, expected_revision)
+
+        items = [_item("image-a", 0), _item("image-b", 1)]
+        client = BlockingClient(items)
+        widget = _widget(items)
+        session = StagedAuditUiSession(widget, client)
+        heartbeats = []
+        safe_generations = []
+        timer = QtCore.QTimer()
+        timer.setInterval(10)
+        timer.timeout.connect(lambda: heartbeats.append(time.monotonic()))
+        session.safe_to_close.connect(safe_generations.append)
+        try:
+            self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
+            timer.start()
+            self.assertTrue(session.approve_and_next())
+            self.assertTrue(_wait_until(entered.is_set))
+            self.assertFalse(session.is_idle())
+            self.assertFalse(session.dialog.approve_button.isEnabled())
+            self.assertFalse(widget.canvas.isEnabled())
+            self.assertFalse(session.approve_and_next())
+
+            QtTest.QTest.qWait(120)
+
+            self.assertGreaterEqual(len(heartbeats), 3)
+            generation = session.request_safe_shutdown("window_close")
+            self.assertEqual(safe_generations, [])
+            self.assertIsNotNone(session.worker_thread)
+
+            release.set()
+            self.assertTrue(
+                _wait_until(lambda: safe_generations == [generation])
+            )
+            self.assertIsNone(session.worker_thread)
+            self.assertEqual(
+                [call[0] for call in client.calls].count("approve"),
+                1,
+            )
+        finally:
+            timer.stop()
+            release.set()
+            self.assertTrue(_finish_session(session))
+            widget.close()
+
+    def test_worker_failure_restores_controls_without_navigation(self):
+        class FailingClient(_AuditClient):
+            def approve(self, image_id, expected_revision):
+                self._record_thread()
+                raise RuntimeError("disk unavailable")
+
+        items = [_item("image-a", 0), _item("image-b", 1)]
+        client = FailingClient(items)
+        widget = _widget(items)
+        session = StagedAuditUiSession(widget, client)
+        session._warn = mock.Mock()
+        try:
+            self.assertTrue(session.begin())
+            self.assertTrue(
+                _wait_until(lambda: session.current_image_id == "image-a")
+            )
+            self.assertTrue(session.approve_and_next())
+            self.assertTrue(_wait_until(lambda: session._warn.called))
+            self.assertTrue(session.is_idle())
+            self.assertEqual(session.current_image_id, "image-a")
+            self.assertTrue(session.dialog.approve_button.isEnabled())
+            self.assertTrue(widget.canvas.isEnabled())
+        finally:
+            self.assertTrue(_finish_session(session))
             widget.close()
 
     def test_review_entry_only_constructs_audit_session(self):

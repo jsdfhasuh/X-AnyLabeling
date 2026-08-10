@@ -26,11 +26,41 @@ class AuditInteractionGuard:
         "delete_image_file",
         "run_all_images",
     )
+    _TRANSACTION_ACTION_NAMES = (
+        "save",
+        "delete",
+        "undo",
+        "undo_last_point",
+        "remove_point",
+        "duplicate",
+        "copy",
+        "paste",
+        "edit_mode",
+        "create_mode",
+        "create_rectangle_mode",
+        "create_pose_mode",
+        "create_rotation_mode",
+        "create_circle_mode",
+        "create_line_mode",
+        "create_point_mode",
+        "create_line_strip_mode",
+        "group_selected_shapes",
+        "ungroup_selected_shapes",
+    )
+    _TRANSACTION_CONTROL_NAMES = (
+        "canvas",
+        "label_list",
+        "unique_label_list",
+        "label_filter_combobox",
+        "shape_dock",
+    )
 
     def __init__(self, widget):
         self.widget = widget
         self._states = []
+        self._transaction_states = []
         self._active = False
+        self._transaction_busy = False
 
     def activate(self):
         if self._active:
@@ -56,11 +86,103 @@ class AuditInteractionGuard:
     def release(self):
         if not self._active:
             return
+        self.set_transaction_busy(False)
         for target, enabled in reversed(self._states):
             target.setEnabled(enabled)
         self._states = []
         self.widget.auto_labeling_audit_active = False
         self._active = False
+
+    def set_transaction_busy(self, busy):
+        busy = bool(busy)
+        if busy == self._transaction_busy:
+            return
+        if busy:
+            actions = getattr(self.widget, "actions", None)
+            for name in self._TRANSACTION_ACTION_NAMES:
+                action = getattr(actions, name, None)
+                if action is not None and callable(
+                    getattr(action, "setEnabled", None)
+                ):
+                    self._transaction_states.append(
+                        (action, action.isEnabled())
+                    )
+                    action.setEnabled(False)
+            for name in self._TRANSACTION_CONTROL_NAMES:
+                control = getattr(self.widget, name, None)
+                if control is not None and callable(
+                    getattr(control, "setEnabled", None)
+                ):
+                    self._transaction_states.append(
+                        (control, control.isEnabled())
+                    )
+                    control.setEnabled(False)
+            self._transaction_busy = True
+            return
+        for target, enabled in reversed(self._transaction_states):
+            target.setEnabled(enabled)
+        self._transaction_states = []
+        self._transaction_busy = False
+
+
+class _StagedAuditOperationWorker(QtCore.QObject):
+    completed = QtCore.pyqtSignal(int, object)
+    failed = QtCore.pyqtSignal(int, object)
+
+    def __init__(self, client):
+        super().__init__()
+        self.client = client
+
+    @QtCore.pyqtSlot(int, str, object)
+    def execute(self, operation_id, kind, payload):
+        try:
+            result = self._execute(kind, payload)
+        except Exception as exc:  # noqa: B902
+            self.failed.emit(operation_id, exc)
+            return
+        self.completed.emit(operation_id, result)
+
+    def _execute(self, kind, payload):
+        if kind == "begin":
+            items = sorted(
+                self.client.list_review_items(),
+                key=lambda value: value["sequence"],
+            )
+            if not items:
+                return {"items": [], "item": None, "summary": None}
+            item = self._read_item(items[0]["image_id"])
+            return {
+                "items": items,
+                "item": item,
+                "summary": self.client.summary(),
+            }
+        if kind == "load":
+            return {
+                "item": self._read_item(payload["image_id"]),
+                "summary": self.client.summary(),
+            }
+        if kind in {"approve", "needs_fix"}:
+            image_id = payload["image_id"]
+            refreshed = self.client.integrity_refresh(image_id)
+            self._raise_integrity_error(refreshed)
+            revision = refreshed["item_revision"]
+            if kind == "approve":
+                item = self.client.approve(image_id, revision)
+            else:
+                item = self.client.needs_fix(image_id, revision)
+            return {"item": item, "summary": self.client.summary()}
+        raise ValueError(f"unknown audit operation: {kind}")
+
+    def _read_item(self, image_id):
+        item = self.client.read_review_item(image_id)
+        self._raise_integrity_error(item)
+        return item
+
+    @staticmethod
+    def _raise_integrity_error(item):
+        error = item.get("integrity_error")
+        if error:
+            raise StagedAuditError(error)
 
 
 class AutoLabelingAuditDialog(QtWidgets.QDialog):
@@ -94,6 +216,13 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
         layout.addWidget(self.status_label)
         layout.addWidget(self.detail_label)
         layout.addWidget(self.counts_label)
+
+        self.activity_bar = QtWidgets.QProgressBar()
+        self.activity_bar.setRange(0, 0)
+        self.activity_bar.setTextVisible(False)
+        self.activity_bar.setFixedHeight(4)
+        self.activity_bar.hide()
+        layout.addWidget(self.activity_bar)
 
         navigation = QtWidgets.QHBoxLayout()
         self.previous_button = QtWidgets.QPushButton(
@@ -133,6 +262,19 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
         self.save_approve_button.clicked.connect(self.save_approve_requested)
         self.approve_button.clicked.connect(self.approve_requested)
         self.finish_button.clicked.connect(self.finish_requested)
+
+    def set_busy(self, busy, finishing=False):
+        busy = bool(busy)
+        for button in (
+            self.previous_button,
+            self.next_button,
+            self.needs_fix_button,
+            self.save_approve_button,
+            self.approve_button,
+        ):
+            button.setEnabled(not busy)
+        self.finish_button.setEnabled(not finishing)
+        self.activity_bar.setVisible(busy)
 
     def set_item(self, item, dirty):
         self.identity_label.setText(
@@ -183,6 +325,9 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
 class StagedAuditUiSession(QtCore.QObject):
     """Sequence stable audit actions around one LabelingWidget."""
 
+    safe_to_close = QtCore.pyqtSignal(int)
+    _execute_requested = QtCore.pyqtSignal(int, str, object)
+
     dialog_class = AutoLabelingAuditDialog
 
     def __init__(self, widget, client):
@@ -197,6 +342,14 @@ class StagedAuditUiSession(QtCore.QObject):
         self.guard = AuditInteractionGuard(widget)
         self.items = []
         self.current_image_id = None
+        self.worker_thread = None
+        self._worker = None
+        self._summary = None
+        self._active_operation = None
+        self._next_operation_id = 0
+        self._finish_requested = False
+        self._shutdown_generation = None
+        self._next_shutdown_generation = 0
         self._closed = False
         self._connect()
 
@@ -209,16 +362,114 @@ class StagedAuditUiSession(QtCore.QObject):
         self.dialog.finish_requested.connect(self.finish)
 
     def begin(self):
-        self.items = sorted(
-            self.client.list_review_items(),
-            key=lambda value: value["sequence"],
-        )
-        if not self.items:
+        if not self._start_worker():
             return False
         self.guard.activate()
         self.dialog.show()
-        self._load(self.items[0]["image_id"], initial=True)
+        if self._submit("begin", {}):
+            return True
+        self._finish_requested = True
+        self._begin_shutdown()
+        return False
+
+    def _start_worker(self):
+        if self.worker_thread is not None or self._closed:
+            return False
+        self.worker_thread = QtCore.QThread(self)
+        self._worker = _StagedAuditOperationWorker(self.client)
+        self._worker.moveToThread(self.worker_thread)
+        self._execute_requested.connect(
+            self._worker.execute,
+            QtCore.Qt.QueuedConnection,
+        )
+        self._worker.completed.connect(
+            self._on_operation_completed,
+            QtCore.Qt.QueuedConnection,
+        )
+        self._worker.failed.connect(
+            self._on_operation_failed,
+            QtCore.Qt.QueuedConnection,
+        )
+        self.worker_thread.finished.connect(self._worker.deleteLater)
+        self.worker_thread.finished.connect(self._on_thread_finished)
+        self.worker_thread.start()
         return True
+
+    def _submit(self, kind, payload):
+        thread = self.worker_thread
+        if (
+            self._closed
+            or self._finish_requested
+            or self._active_operation is not None
+            or thread is None
+            or not thread.isRunning()
+        ):
+            return False
+        self._next_operation_id += 1
+        operation_id = self._next_operation_id
+        self._active_operation = {
+            "operation_id": operation_id,
+            "kind": kind,
+        }
+        self._set_operation_busy(True)
+        self._execute_requested.emit(operation_id, kind, dict(payload))
+        return True
+
+    def _set_operation_busy(self, busy):
+        self.guard.set_transaction_busy(busy)
+        self.dialog.set_busy(busy, finishing=self._finish_requested)
+
+    @QtCore.pyqtSlot(int, object)
+    def _on_operation_completed(self, operation_id, result):
+        operation = self._take_operation(operation_id)
+        if operation is None:
+            return
+        self._set_operation_busy(False)
+        try:
+            self._apply_operation_result(operation["kind"], result)
+        except Exception as exc:  # noqa: B902
+            self._warn(exc)
+        if self._finish_requested and self._active_operation is None:
+            self._begin_shutdown()
+
+    @QtCore.pyqtSlot(int, object)
+    def _on_operation_failed(self, operation_id, exc):
+        operation = self._take_operation(operation_id)
+        if operation is None:
+            return
+        self._set_operation_busy(False)
+        self._warn(exc)
+        if operation["kind"] == "begin":
+            self._finish_requested = True
+        if self._finish_requested:
+            self._begin_shutdown()
+
+    def _take_operation(self, operation_id):
+        operation = self._active_operation
+        if operation is None or operation["operation_id"] != operation_id:
+            return None
+        self._active_operation = None
+        return operation
+
+    def _apply_operation_result(self, kind, result):
+        if kind == "begin":
+            self.items = list(result["items"])
+            if not self.items:
+                self._finish_requested = True
+                return
+            self._summary = result["summary"]
+            self._present_item(result["item"])
+            return
+        item = self._remember_item(result["item"])
+        self._summary = result["summary"]
+        if kind == "load":
+            self._present_item(item)
+        elif kind == "approve":
+            self._start_next_pending()
+        elif kind == "needs_fix":
+            self._refresh_display(item)
+        else:
+            raise ValueError(f"unknown audit result: {kind}")
 
     def _remember_item(self, item):
         image_id = item["image_id"]
@@ -244,8 +495,7 @@ class StagedAuditUiSession(QtCore.QObject):
             raise StagedAuditError("audit_current_image_missing")
         item = self._cached_item(self.current_image_id)
         if item is None:
-            item = self.client.read_review_item(self.current_image_id)
-            item = self._remember_item(item)
+            raise StagedAuditError("audit_current_item_missing")
         return item
 
     def _ensure_clean_and_coordinated(self):
@@ -254,13 +504,13 @@ class StagedAuditUiSession(QtCore.QObject):
         if bool(getattr(self.widget, "auto_labeling_commit_blocked", False)):
             raise StagedAuditError("audit_integrity_refresh_required")
 
-    def _load(self, image_id, initial=False):
-        if not initial:
-            self._ensure_clean_and_coordinated()
-        item = self.client.read_review_item(image_id)
-        if item.get("integrity_error"):
-            raise StagedAuditError(item["integrity_error"])
+    def _start_load(self, image_id):
+        self._ensure_clean_and_coordinated()
+        return self._submit("load", {"image_id": image_id})
+
+    def _present_item(self, item):
         item = self._remember_item(item)
+        image_id = item["image_id"]
         image_path = item["canonical_image_path"]
         file_list = getattr(self.widget, "file_list_widget", None)
         blocked = False
@@ -284,10 +534,10 @@ class StagedAuditUiSession(QtCore.QObject):
         if self._closed or self.current_image_id is None:
             return
         if item is None:
-            item = self.client.read_review_item(self.current_image_id)
-            item = self._remember_item(item)
+            item = self._current_item()
         self.dialog.set_item(item, bool(getattr(self.widget, "dirty", False)))
-        self.dialog.set_summary(self.client.summary())
+        if self._summary is not None:
+            self.dialog.set_summary(self._summary)
 
     def _warn(self, exc):
         code = getattr(exc, "code", "audit_action_failed")
@@ -298,42 +548,40 @@ class StagedAuditUiSession(QtCore.QObject):
             f"{code}\n{detail}" if detail != code else code,
         )
 
-    def _verified_revision(self):
-        self._ensure_clean_and_coordinated()
-        refreshed = self.client.integrity_refresh(self.current_image_id)
-        if refreshed.get("integrity_error"):
-            raise StagedAuditError(refreshed["integrity_error"])
-        self._remember_item(refreshed)
-        return refreshed["item_revision"]
-
     def approve_and_next(self):
         try:
-            revision = self._verified_revision()
-            updated = self.client.approve(self.current_image_id, revision)
-            self._remember_item(updated)
-            self.next_pending()
+            self._ensure_clean_and_coordinated()
+            return self._submit(
+                "approve",
+                {"image_id": self.current_image_id},
+            )
         except Exception as exc:  # noqa: B902
             self._warn(exc)
+            return False
 
     def save_approve_and_next(self):
         try:
             if not self.widget.save_file():
                 raise StagedAuditError("audit_save_failed")
-            revision = self._verified_revision()
-            updated = self.client.approve(self.current_image_id, revision)
-            self._remember_item(updated)
-            self.next_pending()
+            self._ensure_clean_and_coordinated()
+            return self._submit(
+                "approve",
+                {"image_id": self.current_image_id},
+            )
         except Exception as exc:  # noqa: B902
             self._warn(exc)
+            return False
 
     def mark_needs_fix(self):
         try:
-            revision = self._verified_revision()
-            updated = self.client.needs_fix(self.current_image_id, revision)
-            self._remember_item(updated)
-            self._refresh_display()
+            self._ensure_clean_and_coordinated()
+            return self._submit(
+                "needs_fix",
+                {"image_id": self.current_image_id},
+            )
         except Exception as exc:  # noqa: B902
             self._warn(exc)
+            return False
 
     def previous(self):
         try:
@@ -343,49 +591,108 @@ class StagedAuditUiSession(QtCore.QObject):
                 item for item in self.items if item["sequence"] < current
             ]
             if candidates:
-                self._load(candidates[-1]["image_id"])
+                return self._start_load(candidates[-1]["image_id"])
+            return False
         except Exception as exc:  # noqa: B902
             self._warn(exc)
+            return False
 
     def next_pending(self):
         try:
             self._ensure_clean_and_coordinated()
-            current = self._current_item()["sequence"]
-            pending = sorted(
-                (
-                    item
-                    for item in self.items
-                    if item["review_status"]
-                    in {"pending", "needs_fix", "stale"}
-                ),
-                key=lambda value: value["sequence"],
-            )
-            candidates = [
-                item for item in pending if item["sequence"] > current
-            ]
-            if not candidates:
-                candidates = [
-                    item for item in pending if item["sequence"] < current
-                ]
-            if candidates:
-                self._load(candidates[0]["image_id"])
-            else:
-                self.finish()
+            return self._start_next_pending()
         except Exception as exc:  # noqa: B902
             self._warn(exc)
+            return False
+
+    def _start_next_pending(self):
+        current = self._current_item()["sequence"]
+        pending = sorted(
+            (
+                item
+                for item in self.items
+                if item["review_status"] in {"pending", "needs_fix", "stale"}
+            ),
+            key=lambda value: value["sequence"],
+        )
+        candidates = [item for item in pending if item["sequence"] > current]
+        if not candidates:
+            candidates = [
+                item for item in pending if item["sequence"] < current
+            ]
+        if candidates:
+            return self._start_load(candidates[0]["image_id"])
+        self.finish()
+        return True
 
     def finish(self):
         if self._closed:
             return True
+        if self._active_operation is not None:
+            self._finish_requested = True
+            self.dialog.set_busy(True, finishing=True)
+            return False
         try:
             self._ensure_clean_and_coordinated()
         except Exception as exc:  # noqa: B902
             self._warn(exc)
             return False
+        self._finish_requested = True
+        self._begin_shutdown()
+        return True
+
+    def is_idle(self):
+        return self._active_operation is None
+
+    def requires_safe_shutdown(self):
+        return self.worker_thread is not None
+
+    def request_safe_shutdown(self, _reason):
+        if self._shutdown_generation is None:
+            self._next_shutdown_generation += 1
+            self._shutdown_generation = self._next_shutdown_generation
+        self._finish_requested = True
+        if self._active_operation is None:
+            self._begin_shutdown()
+        else:
+            self.dialog.set_busy(True, finishing=True)
+        return self._shutdown_generation
+
+    def _begin_shutdown(self):
+        if not self._closed:
+            self._closed = True
+            self._set_operation_busy(False)
+            self.guard.release()
+            self.dialog.allow_close()
+            self.dialog.close()
+        thread = self.worker_thread
+        if thread is None:
+            self._finish_thread_cleanup()
+        elif thread.isRunning():
+            thread.quit()
+
+    @QtCore.pyqtSlot()
+    def _on_thread_finished(self):
+        worker = self._worker
+        if worker is not None:
+            try:
+                self._execute_requested.disconnect(worker.execute)
+            except (TypeError, RuntimeError):
+                pass
+        thread = self.worker_thread
+        self._worker = None
+        self.worker_thread = None
+        if thread is not None:
+            thread.deleteLater()
+        self._finish_thread_cleanup()
+
+    def _finish_thread_cleanup(self):
         self._closed = True
-        self.guard.release()
-        self.dialog.allow_close()
-        self.dialog.close()
         if getattr(self.widget, "_auto_labeling_audit_session", None) is self:
             self.widget._auto_labeling_audit_session = None
-        return True
+        generation = self._shutdown_generation
+        if generation is not None:
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: self.safe_to_close.emit(generation),
+            )
