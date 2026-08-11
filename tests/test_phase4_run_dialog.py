@@ -24,6 +24,7 @@ from anylabeling.views.labeling.widgets.auto_labeling_run_dialog import (
     FastRunProgressDialog,
     FastRunSetupDialog,
     FastRunUiSession,
+    continuous_start_failure_text_v1,
 )
 
 
@@ -75,6 +76,19 @@ class FastRunDialogTests(unittest.TestCase):
             self.assertFalse(dialog.start_button.icon().isNull())
         finally:
             dialog.close()
+
+    def test_active_run_start_failure_explains_safe_resume_path(self):
+        error = FastControllerError(
+            "active_run_exists",
+            "run-existing:prepared_run_state_not_pristine",
+        )
+
+        message = continuous_start_failure_text_v1(error)
+
+        self.assertIn("run-existing", message)
+        self.assertIn("Process remaining auto-labeling", message)
+        self.assertIn("Saved results", message)
+        self.assertNotIn("prepared_run_state_not_pristine", message)
 
     def test_progress_controls_and_all_skipped_terminal_state(self):
         dialog = FastRunProgressDialog()

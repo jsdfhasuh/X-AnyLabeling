@@ -94,6 +94,12 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
         "stop_continuous": "Stop continuous auto-labeling",
         "cannot_continue": "Cannot continue continuous auto-labeling",
         "cannot_start": "Cannot start continuous auto-labeling",
+        "active_run_exists_guidance": (
+            "An unfinished continuous auto-labeling run already exists "
+            "(run {run_id}). Close this labeling window, then choose "
+            '"Process remaining auto-labeling" from the project labeling '
+            "menu. Saved results from the existing run are preserved."
+        ),
         "fast_tooltip": (
             "Fast uses a 0.0 s delay and does not switch the main canvas "
             "for each image."

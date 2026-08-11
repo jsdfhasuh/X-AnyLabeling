@@ -6735,6 +6735,7 @@ Original images backed up to:
     <message><source>Stop continuous auto-labeling</source><translation>停止连续自动标注</translation></message>
     <message><source>Cannot continue continuous auto-labeling</source><translation>无法继续连续自动标注</translation></message>
     <message><source>Cannot start continuous auto-labeling</source><translation>无法开始连续自动标注</translation></message>
+    <message><source>An unfinished continuous auto-labeling run already exists (run {run_id}). Close this labeling window, then choose &quot;Process remaining auto-labeling&quot; from the project labeling menu. Saved results from the existing run are preserved.</source><translation>已有未完成的连续自动标注任务（Run {run_id}）。请关闭当前标注窗口，然后在项目的标注菜单中选择“处理剩余自动标注”。已有任务中已保存的结果会被保留。</translation></message>
     <message><source>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</source><translation>快速模式使用 0.0 秒延迟，且不会逐图切换主画布。</translation></message>
     <message><source>Continuous auto-labeling is already running.</source><translation>连续自动标注已在运行。</translation></message>
     <message><source>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</source><translation>旧版批处理：此模型不支持快速或可视连续自动标注。旧版批处理不会创建统一审计队列。</translation></message>

@@ -63,6 +63,21 @@ _DEFAULT_SEQUENCE_SETTINGS = {
 }
 
 
+def continuous_start_failure_text_v1(exc):
+    code = str(getattr(exc, "code", "sequence_run_start_failed"))
+    detail = str(exc)
+    if code == "active_run_exists":
+        activation_detail = str(getattr(exc, "detail", "") or "")
+        if not activation_detail and detail.startswith(f"{code}:"):
+            activation_detail = detail[len(code) + 1 :]
+        run_id = activation_detail.split(":", 1)[0].strip() or "unknown"
+        return auto_labeling_text_v1(
+            "active_run_exists_guidance",
+            run_id=run_id,
+        )
+    return f"{code}\n{detail}" if detail != code else code
+
+
 def continuous_auto_labeling_settings_v1(config):
     result = dict(_DEFAULT_SEQUENCE_SETTINGS)
     raw = config.get("continuous_auto_labeling", {})
@@ -1103,12 +1118,10 @@ class FastRunUiSession(QtCore.QObject):
         if self.runner is not None:
             self.runner.shutdown_when_idle()
             self._connect_thread_cleanup()
-        code = getattr(exc, "code", "sequence_run_start_failed")
-        detail = str(exc)
         QtWidgets.QMessageBox.warning(
             self.labeling_widget,
             auto_labeling_text_v1("cannot_start"),
-            f"{code}\n{detail}" if detail != code else code,
+            continuous_start_failure_text_v1(exc),
         )
         if self.runner is None or not self.runner.requires_safe_shutdown():
             self._cleanup()
