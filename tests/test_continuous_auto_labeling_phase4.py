@@ -258,6 +258,56 @@ class FastControllerTests(unittest.TestCase):
                     )
                     self.assertEqual(document["shapes"], [])
 
+    def test_lifecycle_logs_saved_skipped_and_final_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 2)
+            (labels / "image-0000.json").write_text(
+                json.dumps(_valid_empty(Path(paths[0]).name)),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "anylabeling.views.labeling.utils.continuous_auto_labeling."
+                "logger.info"
+            ) as info:
+                _controller, _runner, _manager, summary = self._run(
+                    paths,
+                    labels,
+                    lambda request, _lease: _success(request, target_count=1),
+                    _options(write_policy="SKIP_EXISTING"),
+                )
+
+            messages = "\n".join(call.args[0] for call in info.call_args_list)
+            self.assertIn("run started", messages)
+            self.assertIn("eligible_for_inference=1", messages)
+            self.assertIn("skipped_existing=1", messages)
+            self.assertEqual(messages.count("image started"), 1)
+            self.assertEqual(messages.count("image safely saved"), 1)
+            self.assertIn("run finished", messages)
+            self.assertIn("safely_saved=1", messages)
+            self.assertEqual(summary["succeeded"], 1)
+            self.assertEqual(summary["skipped_existing"], 1)
+
+    def test_logging_failure_never_changes_a_successful_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            with mock.patch(
+                "anylabeling.views.labeling.utils.continuous_auto_labeling."
+                "logger.info",
+                side_effect=RuntimeError("broken log handler"),
+            ):
+                _controller, _runner, _manager, summary = self._run(
+                    paths,
+                    labels,
+                    lambda request, _lease: _success(request, target_count=1),
+                )
+
+            self.assertEqual(summary["processing_status"], "COMPLETED")
+            self.assertEqual(summary["succeeded"], 1)
+            document = json.loads(
+                (labels / "image-0000.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(document["shapes"]), 1)
+
     def test_each_later_admission_is_observed_only_after_runner_idle(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths, labels = _images(Path(tmp), 5)
@@ -303,15 +353,79 @@ class FastControllerTests(unittest.TestCase):
                     )
                 return _success(request, target_count=1)
 
-            controller, _runner, _manager, summary = self._run(
-                paths, labels, execute
-            )
+            with mock.patch(
+                "anylabeling.views.labeling.utils.continuous_auto_labeling."
+                "logger.warning"
+            ) as warning:
+                controller, _runner, _manager, summary = self._run(
+                    paths, labels, execute
+                )
             self.assertEqual(len(calls), 2)
             self.assertEqual(summary["failed_input"], 1)
             self.assertEqual(summary["succeeded"], 1)
             self.assertEqual(summary["processing_status"], "COMPLETED")
             items = controller.run_store.list_items(controller.run_id)
             self.assertEqual(items[0]["failure_resolution"], "auto_skip")
+            warning.assert_called_once()
+            self.assertIn("image input failed", warning.call_args.args[0])
+
+    def test_model_failure_and_explicit_skip_are_logged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            manager = _Manager()
+
+            def execute(request, _lease):
+                return PredictionOutcome.failed(
+                    request,
+                    "model_prediction_failed",
+                    "out of memory",
+                )
+
+            runner = PredictionRunner(manager, request_executor=execute)
+            controller = FastAutoLabelingController(
+                runner,
+                _options(),
+                standalone_image_paths=paths,
+                standalone_output_dir=str(labels),
+            )
+            final = []
+            controller.finished.connect(final.append)
+            with (
+                mock.patch(
+                    "anylabeling.views.labeling.utils."
+                    "continuous_auto_labeling.logger.error"
+                ) as error,
+                mock.patch(
+                    "anylabeling.views.labeling.utils."
+                    "continuous_auto_labeling.logger.info"
+                ) as info,
+            ):
+                self.assertTrue(controller.start())
+                self.assertTrue(
+                    _wait_until(
+                        lambda: controller.phase == "WAITING_ERROR"
+                        and runner.is_idle()
+                    )
+                )
+                self.assertTrue(controller.skip_current())
+                self.assertTrue(_wait_until(lambda: bool(final)))
+                self.assertTrue(
+                    _wait_until(lambda: runner.worker_thread is None)
+                )
+
+            self.assertTrue(
+                any(
+                    "image model failed" in call.args[0]
+                    for call in error.call_args_list
+                )
+            )
+            self.assertTrue(
+                any(
+                    "model_error_explicit_skip" in call.args[0]
+                    for call in info.call_args_list
+                )
+            )
+            self.assertEqual(final[0]["explicit_error_skips"], 1)
 
     def test_nonzero_success_has_distinct_zero_target_count(self):
         with tempfile.TemporaryDirectory() as tmp:

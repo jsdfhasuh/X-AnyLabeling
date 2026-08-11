@@ -83,9 +83,28 @@ class FastRunDialogTests(unittest.TestCase):
         dialog.pause_requested.connect(lambda: pause.append(True))
         dialog.resume_requested.connect(lambda: resume.append(True))
         try:
+            self.assertEqual(
+                dialog.pause_button.text(), auto_labeling_text_v1("pause")
+            )
             dialog.pause_button.click()
             self.assertEqual(pause, [True])
+            self.assertFalse(dialog.pause_button.isEnabled())
+            self.assertEqual(
+                dialog.state_label.text(),
+                auto_labeling_text_v1("phase_pausing"),
+            )
+            dialog.set_phase("INFERENCING")
+            self.assertFalse(dialog.pause_button.isEnabled())
+            self.assertEqual(
+                dialog.state_label.text(),
+                auto_labeling_text_v1("phase_pausing"),
+            )
             dialog.set_phase("PAUSED")
+            self.assertTrue(dialog.pause_button.isEnabled())
+            self.assertEqual(
+                dialog.state_label.text(),
+                auto_labeling_text_v1("phase_paused"),
+            )
             dialog.pause_button.click()
             self.assertEqual(resume, [True])
 
@@ -103,6 +122,10 @@ class FastRunDialogTests(unittest.TestCase):
             self.assertEqual(dialog.progress_bar.format(), "7 / 10")
             self.assertEqual(dialog.file_label.text(), "image.jpg")
             self.assertEqual(dialog.metric_labels["succeeded"].text(), "2")
+            metric_names = {
+                label.text() for label in dialog.findChildren(QtWidgets.QLabel)
+            }
+            self.assertIn(auto_labeling_text_v1("succeeded"), metric_names)
 
             dialog.show_waiting_error(
                 {
@@ -124,6 +147,48 @@ class FastRunDialogTests(unittest.TestCase):
             self.assertEqual(
                 dialog.state_label.text(),
                 auto_labeling_text_v1("nothing_to_process"),
+            )
+        finally:
+            dialog.close()
+
+    def test_progress_dialog_prefers_the_parent_window_edge(self):
+        available = QtCore.QRect(0, 0, 1920, 1080)
+        dialog_size = QtCore.QSize(520, 400)
+
+        owner = QtCore.QRect(100, 100, 800, 700)
+        outside = FastRunProgressDialog._edge_position(
+            owner, dialog_size, available
+        )
+        self.assertGreater(outside.x(), owner.right())
+        self.assertEqual(outside.y(), owner.top() + 16)
+
+        maximized = QtCore.QRect(0, 0, 1920, 1080)
+        inside = FastRunProgressDialog._edge_position(
+            maximized, dialog_size, available
+        )
+        self.assertGreater(inside.x(), maximized.center().x())
+        self.assertLessEqual(
+            inside.x() + dialog_size.width() - 1,
+            available.right() - 16,
+        )
+
+    def test_rejected_pause_request_restores_the_running_controls(self):
+        dialog = FastRunProgressDialog()
+        controller = SimpleNamespace(
+            request_pause=mock.Mock(return_value=False)
+        )
+        session = SimpleNamespace(controller=controller, progress=dialog)
+        dialog.pause_requested.connect(
+            lambda: FastRunUiSession._pause(session)
+        )
+        try:
+            dialog.set_phase("INFERENCING")
+            dialog.pause_button.click()
+            controller.request_pause.assert_called_once_with()
+            self.assertTrue(dialog.pause_button.isEnabled())
+            self.assertEqual(
+                dialog.state_label.text(),
+                auto_labeling_text_v1("phase_inferencing"),
             )
         finally:
             dialog.close()

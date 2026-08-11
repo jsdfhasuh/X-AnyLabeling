@@ -285,6 +285,9 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self._terminal = False
         self._paused = False
+        self._pause_pending = False
+        self._phase = "PREPARING"
+        self._positioned = False
         self.setWindowTitle(auto_labeling_text_v1("progress_title"))
         self.setMinimumWidth(520)
         self.setWindowModality(QtCore.Qt.NonModal)
@@ -342,6 +345,7 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.pause_button = QtWidgets.QPushButton(
             auto_labeling_text_v1("pause")
         )
+        self.pause_button.setToolTip(auto_labeling_text_v1("pause_tooltip"))
         self.pause_button.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_MediaPause)
         )
@@ -387,11 +391,16 @@ class FastRunProgressDialog(QtWidgets.QDialog):
     def _toggle_pause(self):
         if self._paused:
             self.resume_requested.emit()
-        else:
+        elif not self._pause_pending:
+            self._pause_pending = True
+            self.pause_button.setEnabled(False)
+            self.state_label.setText(auto_labeling_text_v1("phase_pausing"))
             self.pause_requested.emit()
 
     def set_phase(self, phase):
+        self._phase = phase
         messages = {
+            "PREPARING": auto_labeling_text_v1("preparing"),
             "LOADING": auto_labeling_text_v1("phase_loading"),
             "INFERENCING": auto_labeling_text_v1("phase_inferencing"),
             "COMMITTING": auto_labeling_text_v1("phase_committing"),
@@ -400,12 +409,20 @@ class FastRunProgressDialog(QtWidgets.QDialog):
             "PAUSED": auto_labeling_text_v1("phase_paused"),
             "FINISHED": auto_labeling_text_v1("phase_finished"),
         }
-        self.state_label.setText(messages.get(phase, phase))
         self._paused = phase == "PAUSED"
+        if self._paused or phase == "FINISHED":
+            self._pause_pending = False
+        if self._pause_pending:
+            self.state_label.setText(auto_labeling_text_v1("phase_pausing"))
+        else:
+            self.state_label.setText(messages.get(phase, phase))
         self.pause_button.setText(
             auto_labeling_text_v1("continue")
             if self._paused
             else auto_labeling_text_v1("pause")
+        )
+        self.pause_button.setEnabled(
+            phase != "FINISHED" and not self._pause_pending
         )
         self.pause_button.setIcon(
             self.style().standardIcon(
@@ -414,6 +431,55 @@ class FastRunProgressDialog(QtWidgets.QDialog):
                 else QtWidgets.QStyle.SP_MediaPause
             )
         )
+
+    def cancel_pause_request(self):
+        if not self._pause_pending:
+            return
+        self._pause_pending = False
+        self.set_phase(self._phase)
+
+    @staticmethod
+    def _edge_position(owner_rect, dialog_size, available_rect, margin=16):
+        width = dialog_size.width()
+        height = dialog_size.height()
+        outside_x = owner_rect.right() + margin + 1
+        if outside_x + width - 1 <= available_rect.right() - margin:
+            x = outside_x
+        else:
+            x = owner_rect.right() - width - margin + 1
+        y = owner_rect.top() + margin
+        max_x = available_rect.right() - width - margin + 1
+        max_y = available_rect.bottom() - height - margin + 1
+        x = max(available_rect.left() + margin, min(x, max_x))
+        y = max(available_rect.top() + margin, min(y, max_y))
+        return QtCore.QPoint(x, y)
+
+    def _position_near_parent_edge(self):
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        owner = parent.window()
+        owner_rect = owner.frameGeometry()
+        screen = QtWidgets.QApplication.screenAt(owner_rect.center())
+        if screen is None:
+            available_rect = (
+                QtWidgets.QApplication.desktop().availableGeometry(owner)
+            )
+        else:
+            available_rect = screen.availableGeometry()
+        position = self._edge_position(
+            owner_rect,
+            self.frameGeometry().size(),
+            available_rect,
+        )
+        self.move(position)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._positioned:
+            return
+        self._positioned = True
+        QtCore.QTimer.singleShot(0, self._position_near_parent_edge)
 
     def update_progress(self, progress):
         total = int(progress.get("total", 0))
@@ -451,14 +517,14 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.error_label.show()
         self.retry_button.show()
         self.skip_button.show()
-        self.pause_button.setEnabled(True)
+        self.pause_button.setEnabled(not self._pause_pending)
 
     def clear_waiting_error(self):
         self.error_label.clear()
         self.error_label.hide()
         self.retry_button.hide()
         self.skip_button.hide()
-        self.pause_button.setEnabled(True)
+        self.pause_button.setEnabled(not self._pause_pending)
 
     def finish_run(self, summary):
         self._terminal = True
@@ -840,7 +906,7 @@ class FastRunUiSession(QtCore.QObject):
         self.controller.progress_changed.connect(self.progress.update_progress)
         self.controller.waiting_error.connect(self.progress.show_waiting_error)
         self.controller.finished.connect(self._on_finished)
-        self.progress.pause_requested.connect(self.controller.request_pause)
+        self.progress.pause_requested.connect(self._pause)
         self.progress.resume_requested.connect(self._resume)
         self.progress.stop_requested.connect(self._stop)
         self.progress.retry_requested.connect(self._retry)
@@ -859,6 +925,10 @@ class FastRunUiSession(QtCore.QObject):
             "PRESENTING",
         }:
             self.guard.set_running(True)
+
+    def _pause(self):
+        if not self.controller.request_pause():
+            self.progress.cancel_pause_request()
 
     def _resume(self):
         try:

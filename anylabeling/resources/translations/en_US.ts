@@ -5389,6 +5389,7 @@ Original images backed up to:
     <message><source>Workset total</source><translation>Workset total</translation></message>
     <message><source>Selected by range</source><translation>Selected by range</translation></message>
     <message><source>Eligible for inference</source><translation>Eligible for inference</translation></message>
+    <message><source>Safely saved</source><translation>Safely saved</translation></message>
     <message><source>Succeeded</source><translation>Succeeded</translation></message>
     <message><source>Zero target</source><translation>Zero target</translation></message>
     <message><source>Skipped existing</source><translation>Skipped existing</translation></message>
@@ -5402,7 +5403,8 @@ Original images backed up to:
     <message><source>Remaining</source><translation>Remaining</translation></message>
     <message><source>Processing status</source><translation>Processing status</translation></message>
     <message><source>Completed with errors</source><translation>Completed with errors</translation></message>
-    <message><source>Pause</source><translation>Pause</translation></message>
+    <message><source>Pause and edit</source><translation>Pause and edit</translation></message>
+    <message><source>Finish the current image safely, then unlock drawing and saving.</source><translation>Finish the current image safely, then unlock drawing and saving.</translation></message>
     <message><source>Stop</source><translation>Stop</translation></message>
     <message><source>Retry current image</source><translation>Retry current image</translation></message>
     <message><source>Skip current image</source><translation>Skip current image</translation></message>
@@ -5413,10 +5415,12 @@ Original images backed up to:
     <message><source>Saving safely</source><translation>Saving safely</translation></message>
     <message><source>Saved result displayed</source><translation>Saved result displayed</translation></message>
     <message><source>Waiting for error resolution</source><translation>Waiting for error resolution</translation></message>
+    <message><source>Paused - editing enabled</source><translation>Paused - editing enabled</translation></message>
     <message><source>Paused</source><translation>Paused</translation></message>
+    <message><source>Pausing safely after the current image is saved...</source><translation>Pausing safely after the current image is saved...</translation></message>
     <message><source>Run finished</source><translation>Run finished</translation></message>
     <message><source>Continue</source><translation>Continue</translation></message>
-    <message><source>Paused, {remaining:.1f} s remaining</source><translation>Paused, {remaining:.1f} s remaining</translation></message>
+    <message><source>Paused - editing enabled ({remaining:.1f} s remaining)</source><translation>Paused - editing enabled ({remaining:.1f} s remaining)</translation></message>
     <message><source>Nothing to process</source><translation>Nothing to process</translation></message>
     <message><source>Run result: {status}</source><translation>Run result: {status}</translation></message>
     <message><source>Close</source><translation>Close</translation></message>

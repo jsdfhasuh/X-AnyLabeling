@@ -6694,6 +6694,7 @@ Original images backed up to:
     <message><source>Workset total</source><translation>工作集总数</translation></message>
     <message><source>Selected by range</source><translation>范围内选中</translation></message>
     <message><source>Eligible for inference</source><translation>可执行推理</translation></message>
+    <message><source>Safely saved</source><translation>已安全保存</translation></message>
     <message><source>Succeeded</source><translation>成功</translation></message>
     <message><source>Zero target</source><translation>零目标</translation></message>
     <message><source>Skipped existing</source><translation>跳过已有标注</translation></message>
@@ -6707,7 +6708,8 @@ Original images backed up to:
     <message><source>Remaining</source><translation>剩余</translation></message>
     <message><source>Processing status</source><translation>处理状态</translation></message>
     <message><source>Completed with errors</source><translation>完成但存在错误</translation></message>
-    <message><source>Pause</source><translation>暂停</translation></message>
+    <message><source>Pause and edit</source><translation>暂停并编辑</translation></message>
+    <message><source>Finish the current image safely, then unlock drawing and saving.</source><translation>当前图片安全保存完成后，解锁绘制和保存。</translation></message>
     <message><source>Stop</source><translation>停止</translation></message>
     <message><source>Retry current image</source><translation>重试当前图片</translation></message>
     <message><source>Skip current image</source><translation>跳过当前图片</translation></message>
@@ -6718,10 +6720,12 @@ Original images backed up to:
     <message><source>Saving safely</source><translation>正在安全保存</translation></message>
     <message><source>Saved result displayed</source><translation>已显示保存结果</translation></message>
     <message><source>Waiting for error resolution</source><translation>等待处理错误</translation></message>
+    <message><source>Paused - editing enabled</source><translation>已暂停 - 可编辑</translation></message>
     <message><source>Paused</source><translation>已暂停</translation></message>
+    <message><source>Pausing safely after the current image is saved...</source><translation>正在安全暂停，等待当前图片保存完成...</translation></message>
     <message><source>Run finished</source><translation>运行已结束</translation></message>
     <message><source>Continue</source><translation>继续</translation></message>
-    <message><source>Paused, {remaining:.1f} s remaining</source><translation>已暂停，剩余 {remaining:.1f} 秒</translation></message>
+    <message><source>Paused - editing enabled ({remaining:.1f} s remaining)</source><translation>已暂停 - 可编辑（剩余 {remaining:.1f} 秒）</translation></message>
     <message><source>Nothing to process</source><translation>无需处理</translation></message>
     <message><source>Run result: {status}</source><translation>运行结果：{status}</translation></message>
     <message><source>Close</source><translation>关闭</translation></message>

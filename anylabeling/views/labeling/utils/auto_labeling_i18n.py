@@ -49,7 +49,7 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
         "workset_total": "Workset total",
         "selected_by_range": "Selected by range",
         "eligible_for_inference": "Eligible for inference",
-        "succeeded": "Succeeded",
+        "succeeded": "Safely saved",
         "zero_target": "Zero target",
         "skipped_existing": "Skipped existing",
         "skipped_outside_range": "Skipped outside range",
@@ -62,7 +62,10 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
         "remaining": "Remaining",
         "processing_status": "Processing status",
         "completed_with_errors": "Completed with errors",
-        "pause": "Pause",
+        "pause": "Pause and edit",
+        "pause_tooltip": (
+            "Finish the current image safely, then unlock drawing and saving."
+        ),
         "stop": "Stop",
         "retry_current": "Retry current image",
         "skip_current": "Skip current image",
@@ -73,10 +76,15 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
         "phase_committing": "Saving safely",
         "phase_presenting": "Saved result displayed",
         "phase_waiting_error": "Waiting for error resolution",
-        "phase_paused": "Paused",
+        "phase_paused": "Paused - editing enabled",
+        "phase_pausing": (
+            "Pausing safely after the current image is saved..."
+        ),
         "phase_finished": "Run finished",
         "continue": "Continue",
-        "paused_remaining": "Paused, {remaining:.1f} s remaining",
+        "paused_remaining": (
+            "Paused - editing enabled ({remaining:.1f} s remaining)"
+        ),
         "nothing_to_process": "Nothing to process",
         "run_result": "Run result: {status}",
         "close": "Close",

@@ -17,6 +17,7 @@ from anylabeling.services.auto_labeling.prediction_job import (
     PredictionOutcome,
     PredictionRequest,
 )
+from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.auto_labeling_commit import (
     LabelConflictError,
     commit_label_for_image_v1,
@@ -70,6 +71,14 @@ class FastControllerError(RuntimeError):
 
 def _utc_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _log_event(level, message):
+    # Observability must never change a commit or controller outcome.
+    try:
+        getattr(logger, level)(message)
+    except Exception:
+        pass
 
 
 def _record_value(record, field):
@@ -843,6 +852,18 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             )
             self._started = True
             self._set_phase(initial_phase)
+            _log_event(
+                "info",
+                "[continuous-auto-labeling] run started: "
+                f"run_id={self.run_id} mode={self.execution_mode} "
+                f"total={len(self.queue_entries)} "
+                f"eligible_for_inference="
+                f"{self._live_summary['eligible_for_inference']} "
+                f"skipped_existing="
+                f"{self._live_summary['skipped_existing']} "
+                f"write_policy={self.options.write_policy} "
+                f"delay_seconds={self.delay_seconds:.1f}",
+            )
             self._dispatch_next()
             return True
         except Exception as exc:
@@ -1122,6 +1143,13 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             existing_shapes_input=[],
             delivery_mode="RETURN_ONLY",
         )
+        _log_event(
+            "info",
+            "[continuous-auto-labeling] image started: "
+            f"run_id={self.run_id} mode={self.execution_mode} "
+            f"progress={self.queue_position}/{len(self.queue_entries)} "
+            f"image_id={image_id} file={os.path.basename(image_path)}",
+        )
         if self.execution_mode == "VISIBLE":
             self.presentation_epoch += 1
             epoch = self.presentation_epoch
@@ -1340,6 +1368,31 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             committed_item = self._finish_attempt(
                 request, "succeeded", None, None
             )
+            if result.composition.action == "skipped":
+                _log_event(
+                    "info",
+                    "[continuous-auto-labeling] image skipped: "
+                    f"run_id={self.run_id} image_id={request.image_id} "
+                    f"file={os.path.basename(image_path)} "
+                    f"reason={result.composition.skip_reason or 'existing'}",
+                )
+            elif result.composition.action == "already_committed":
+                _log_event(
+                    "info",
+                    "[continuous-auto-labeling] image commit already verified: "
+                    f"run_id={self.run_id} image_id={request.image_id} "
+                    f"file={os.path.basename(image_path)}",
+                )
+            else:
+                _log_event(
+                    "info",
+                    "[continuous-auto-labeling] image safely saved: "
+                    f"run_id={self.run_id} image_id={request.image_id} "
+                    f"file={os.path.basename(image_path)} "
+                    f"action={result.composition.action} "
+                    f"target_count={result.composition.target_count} "
+                    f"zero_target={result.composition.zero_target}",
+                )
             if result.composition.action != "skipped":
                 self.modified_image_ids.add(request.image_id)
             self._emit_progress(request.image_id)
@@ -1357,6 +1410,12 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             if isinstance(self.commit_store, InMemoryCommitStoreV1):
                 self._sync_standalone_commit(request.image_id)
             self._finish_attempt(request, "conflict", exc.code, str(exc))
+            _log_event(
+                "warning",
+                "[continuous-auto-labeling] image conflict: "
+                f"run_id={self.run_id} image_id={request.image_id} "
+                f"file={os.path.basename(image_path)} code={exc.code}",
+            )
             if self.execution_mode == "VISIBLE":
                 self._clear_presentation_state()
             self._emit_progress(request.image_id)
@@ -1519,6 +1578,13 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             self._finish_attempt(
                 request, "conflict", code, outcome.error_message
             )
+            _log_event(
+                "warning",
+                "[continuous-auto-labeling] image conflict: "
+                f"run_id={self.run_id} image_id={request.image_id} "
+                f"file={os.path.basename(request.canonical_image_path)} "
+                f"code={code}",
+            )
             if self.execution_mode == "VISIBLE":
                 self._clear_presentation_state()
             self._emit_progress(request.image_id)
@@ -1527,12 +1593,26 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             self._finish_attempt(
                 request, "failed_input", code, outcome.error_message
             )
+            _log_event(
+                "warning",
+                "[continuous-auto-labeling] image input failed: "
+                f"run_id={self.run_id} image_id={request.image_id} "
+                f"file={os.path.basename(request.canonical_image_path)} "
+                f"code={code} detail={outcome.error_message or ''}",
+            )
             if self.execution_mode == "VISIBLE":
                 self._clear_presentation_state()
             self._emit_progress(request.image_id)
             return
         self._finish_attempt(
             request, "model_failed", code, outcome.error_message
+        )
+        _log_event(
+            "error",
+            "[continuous-auto-labeling] image model failed: "
+            f"run_id={self.run_id} image_id={request.image_id} "
+            f"file={os.path.basename(request.canonical_image_path)} "
+            f"code={code} detail={outcome.error_message or ''}",
         )
         error = {
             "image_id": request.image_id,
@@ -1722,6 +1802,12 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                 except Exception:
                     pass
             self.hard_error = {"code": code, "message": str(detail or "")}
+            _log_event(
+                "error",
+                "[continuous-auto-labeling] run failed: "
+                f"run_id={self.run_id or 'not-activated'} "
+                f"code={code} detail={detail or ''}",
+            )
             self.runner.request_stop()
             try:
                 self._set_run_state(
@@ -1905,6 +1991,12 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                     },
                 )
             )
+            _log_event(
+                "info",
+                "[continuous-auto-labeling] image skipped: "
+                f"run_id={self.run_id} image_id={image_id} "
+                "reason=model_error_explicit_skip",
+            )
             self.waiting_image_id = None
             self.waiting_error_details = None
             if self.execution_mode == "VISIBLE":
@@ -2049,6 +2141,17 @@ class ContinuousAutoLabelingController(QtCore.QObject):
             self.presentation_adapter.deactivate(self.presentation_token)
         if self.control_intent != "CLOSE":
             self.runner.shutdown_when_idle()
+        _log_event(
+            "info",
+            "[continuous-auto-labeling] run finished: "
+            f"run_id={self.run_id} status={summary['processing_status']} "
+            f"safely_saved={summary['succeeded']} "
+            f"skipped_existing={summary['skipped_existing']} "
+            f"failed_input={summary['failed_input']} "
+            f"model_failed_unresolved={summary['model_failed_unresolved']} "
+            f"conflicts={summary['conflicts']} "
+            f"remaining={summary['remaining']}",
+        )
         self.finished.emit(summary)
 
 
