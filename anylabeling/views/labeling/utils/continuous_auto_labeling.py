@@ -25,6 +25,9 @@ from anylabeling.views.labeling.utils.auto_labeling_commit import (
     resolve_existing_label,
     validate_output_paths_v1,
 )
+from anylabeling.views.labeling.utils.auto_labeling_contracts import (
+    validate_document_digest_v1,
+)
 from anylabeling.views.labeling.utils.auto_labeling_host import (
     resolve_resume_sequence_spec_v1,
 )
@@ -734,6 +737,7 @@ class ContinuousAutoLabelingController(QtCore.QObject):
     progress_changed = QtCore.pyqtSignal(object)
     waiting_error = QtCore.pyqtSignal(object)
     presentation_ready = QtCore.pyqtSignal(object)
+    label_committed = QtCore.pyqtSignal(object)
     finished = QtCore.pyqtSignal(object)
     safe_to_close = QtCore.pyqtSignal(int)
 
@@ -1395,6 +1399,7 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                 )
             if result.composition.action != "skipped":
                 self.modified_image_ids.add(request.image_id)
+                self._publish_label_committed(request, record, committed_item)
             self._emit_progress(request.image_id)
             if (
                 self.execution_mode == "VISIBLE"
@@ -1689,6 +1694,39 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                 changes,
             )
         )
+
+    def _publish_label_committed(self, request, record, item):
+        """Publish a UI hint only after the durable item checkpoint exists."""
+        try:
+            if (
+                type(item) is not dict
+                or item.get("image_id") != request.image_id
+                or item.get("latest_attempt_id") != request.attempt_id
+                or item.get("execution_status") != "succeeded"
+                or item.get("staged_commit_status") != "committed"
+            ):
+                return False
+            digest = (item.get("digests") or {}).get("staged_document_digest")
+            validate_document_digest_v1(digest)
+            image_path = _record_value(record, "canonical_session_image_path")
+            if (
+                type(image_path) is not str
+                or _canonical(image_path) != image_path
+            ):
+                return False
+            self.label_committed.emit(
+                {
+                    "run_id": self.run_id,
+                    "image_id": request.image_id,
+                    "attempt_id": request.attempt_id,
+                    "canonical_image_path": image_path,
+                    "staged_document_digest": digest,
+                }
+            )
+            return True
+        except Exception:
+            # A stale or broken UI observer must not change a completed commit.
+            return False
 
     def _sync_standalone_commit(self, image_id, source_image_digest=None):
         source = self.commit_store.read_item(image_id)

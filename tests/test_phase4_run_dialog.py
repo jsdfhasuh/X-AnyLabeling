@@ -193,6 +193,73 @@ class FastRunDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_verified_commit_checks_only_the_matching_file_list_row(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.normcase(
+                os.path.realpath(os.path.join(tmp, "first.png"))
+            )
+            second = os.path.normcase(
+                os.path.realpath(os.path.join(tmp, "second.png"))
+            )
+            for path in (first, second):
+                Path(path).write_bytes(b"image")
+            file_list = QtWidgets.QListWidget()
+            for path in (first, second):
+                item = QtWidgets.QListWidgetItem(path)
+                item.setCheckState(QtCore.Qt.Unchecked)
+                file_list.addItem(item)
+            record = SimpleNamespace(
+                image_id="image-a",
+                canonical_session_image_path=first,
+            )
+            audit_state = {"review_status": "pending"}
+            widget = SimpleNamespace(
+                image_list=[first, second],
+                fn_to_index={first: 0, second: 1},
+                file_list_widget=file_list,
+                audit_state=audit_state,
+            )
+            controller = SimpleNamespace(
+                run_id="run-a", records_by_id={"image-a": record}
+            )
+            session = SimpleNamespace(
+                controller=controller, labeling_widget=widget
+            )
+            event = {
+                "run_id": "run-a",
+                "image_id": "image-a",
+                "attempt_id": "attempt-a",
+                "canonical_image_path": first,
+                "staged_document_digest": "aldoc1:" + "a" * 64,
+            }
+
+            FastRunUiSession._on_label_committed(session, event)
+            self.assertEqual(file_list.item(0).checkState(), QtCore.Qt.Checked)
+            self.assertEqual(
+                file_list.item(1).checkState(), QtCore.Qt.Unchecked
+            )
+            self.assertEqual(audit_state, {"review_status": "pending"})
+
+            ignored = [
+                {**event, "run_id": "stale-run"},
+                {**event, "image_id": "wrong-image"},
+                {**event, "canonical_image_path": second},
+                {**event, "staged_document_digest": "invalid"},
+            ]
+            for stale_event in ignored:
+                file_list.item(0).setCheckState(QtCore.Qt.Unchecked)
+                FastRunUiSession._on_label_committed(session, stale_event)
+                self.assertEqual(
+                    file_list.item(0).checkState(), QtCore.Qt.Unchecked
+                )
+
+            widget.fn_to_index[first] = 1
+            FastRunUiSession._on_label_committed(session, event)
+            self.assertEqual(
+                file_list.item(0).checkState(), QtCore.Qt.Unchecked
+            )
+            self.assertEqual(audit_state, {"review_status": "pending"})
+
 
 class FastRunRoutingTests(unittest.TestCase):
     @classmethod

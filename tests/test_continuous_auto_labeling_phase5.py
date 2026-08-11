@@ -501,6 +501,44 @@ class VisibleLifecycleTests(unittest.TestCase):
             self.assertTrue(_wait_until(lambda: bool(finished)))
             self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
 
+    def test_zero_target_visible_commit_emits_verified_label_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths, labels = _images(Path(tmp), 1)
+            controller, runner, _manager, _presenter, timer, clock = (
+                _visible_controller(
+                    paths,
+                    labels,
+                    lambda request, _lease: _success(request),
+                    delay=0.5,
+                )
+            )
+            committed = []
+            finished = []
+            controller.label_committed.connect(committed.append)
+            controller.finished.connect(finished.append)
+
+            self.assertTrue(controller.start())
+            self.assertTrue(_wait_until(lambda: timer.active))
+            self.assertEqual(len(committed), 1)
+            item = controller.run_store.read_item(
+                controller.run_id, committed[0]["image_id"]
+            )
+            self.assertEqual(item["execution_status"], "succeeded")
+            self.assertEqual(item["staged_commit_status"], "committed")
+            self.assertEqual(
+                committed[0]["staged_document_digest"],
+                item["digests"]["staged_document_digest"],
+            )
+            label = resolve_existing_label(
+                labels / (Path(paths[0]).stem + ".json")
+            )
+            self.assertEqual(label.presence, "VALID_EMPTY")
+
+            _fire_full_delay(controller, timer, clock)
+            self.assertTrue(_wait_until(lambda: bool(finished)))
+            self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
+            self.assertEqual(len(committed), 1)
+
     def test_timer_and_runner_idle_are_an_order_independent_double_gate(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths, labels = _images(Path(tmp), 2)
@@ -842,6 +880,8 @@ class VisibleLifecycleTests(unittest.TestCase):
                     )
                 )
                 finished = []
+                committed = []
+                controller.label_committed.connect(committed.append)
                 controller.finished.connect(finished.append)
                 controller.start()
                 self.assertTrue(_wait_until(lambda: bool(finished)))
@@ -854,6 +894,7 @@ class VisibleLifecycleTests(unittest.TestCase):
                     finished[0]["processing_status"],
                     expected_status,
                 )
+                self.assertEqual(committed, [])
 
     def test_presentation_failure_is_terminal_after_safe_commit(self):
         class FailingPresenter(_DiskPresenter):

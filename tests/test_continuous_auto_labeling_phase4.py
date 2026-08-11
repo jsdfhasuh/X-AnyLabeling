@@ -389,6 +389,8 @@ class FastControllerTests(unittest.TestCase):
                 standalone_output_dir=str(labels),
             )
             final = []
+            committed = []
+            controller.label_committed.connect(committed.append)
             controller.finished.connect(final.append)
             with (
                 mock.patch(
@@ -426,6 +428,7 @@ class FastControllerTests(unittest.TestCase):
                 )
             )
             self.assertEqual(final[0]["explicit_error_skips"], 1)
+            self.assertEqual(committed, [])
 
     def test_nonzero_success_has_distinct_zero_target_count(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -502,6 +505,23 @@ class FastControllerTests(unittest.TestCase):
                 standalone_output_dir=str(labels),
             )
             final = []
+            committed = []
+            checkpointed = []
+
+            def observe_commit(event):
+                item = controller.run_store.read_item(
+                    event["run_id"], event["image_id"]
+                )
+                committed.append(event)
+                checkpointed.append(
+                    (
+                        item["execution_status"],
+                        item["staged_commit_status"],
+                        item["digests"]["staged_document_digest"],
+                    )
+                )
+
+            controller.label_committed.connect(observe_commit)
             controller.finished.connect(final.append)
             with mock.patch(
                 "anylabeling.views.labeling.utils.continuous_auto_labeling."
@@ -519,9 +539,21 @@ class FastControllerTests(unittest.TestCase):
                 controller._on_outcome_ready(_success(request))
                 controller._on_outcome_ready(_success(request))
                 self.assertEqual(commit.call_count, 1)
+                self.assertEqual(len(committed), 1)
+                self.assertEqual(
+                    checkpointed,
+                    [
+                        (
+                            "succeeded",
+                            "committed",
+                            committed[0]["staged_document_digest"],
+                        )
+                    ],
+                )
                 release.set()
                 self.assertTrue(_wait_until(lambda: bool(final)))
                 self.assertEqual(commit.call_count, 1)
+                self.assertEqual(len(committed), 1)
             self.assertTrue(_wait_until(lambda: runner.worker_thread is None))
             self.assertEqual(final[0]["succeeded"], 1)
             self.assertEqual(final[0]["zero_target"], 1)

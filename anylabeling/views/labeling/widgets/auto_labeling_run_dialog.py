@@ -23,6 +23,9 @@ from anylabeling.views.labeling.utils.auto_labeling_audit import (
 from anylabeling.views.labeling.utils.auto_labeling_commit import (
     resolve_existing_label,
 )
+from anylabeling.views.labeling.utils.auto_labeling_contracts import (
+    validate_document_digest_v1,
+)
 from anylabeling.views.labeling.utils.auto_labeling_sequence import (
     FastRunOptionsV1,
     SequenceRunOptionsV1,
@@ -905,6 +908,7 @@ class FastRunUiSession(QtCore.QObject):
         self.controller.state_changed.connect(self._on_phase_changed)
         self.controller.progress_changed.connect(self.progress.update_progress)
         self.controller.waiting_error.connect(self.progress.show_waiting_error)
+        self.controller.label_committed.connect(self._on_label_committed)
         self.controller.finished.connect(self._on_finished)
         self.progress.pause_requested.connect(self._pause)
         self.progress.resume_requested.connect(self._resume)
@@ -913,6 +917,54 @@ class FastRunUiSession(QtCore.QObject):
         self.progress.skip_requested.connect(self._skip)
         self.progress.review_now_requested.connect(self._review_now)
         self.progress.review_later_requested.connect(self._review_later)
+
+    def _on_label_committed(self, event):
+        """Reflect a verified label commit in the file list only."""
+        try:
+            if type(event) is not dict or self.controller is None:
+                return
+            if event.get("run_id") != getattr(self.controller, "run_id", None):
+                return
+            image_id = event.get("image_id")
+            attempt_id = event.get("attempt_id")
+            image_path = event.get("canonical_image_path")
+            if (
+                type(image_id) is not str
+                or not image_id
+                or type(attempt_id) is not str
+                or not attempt_id
+                or type(image_path) is not str
+                or _canonical(image_path) != image_path
+            ):
+                return
+            validate_document_digest_v1(event.get("staged_document_digest"))
+            records = getattr(self.controller, "records_by_id", {})
+            record = records.get(image_id)
+            if (
+                record is None
+                or _record_value(record, "image_id") != image_id
+                or _record_value(record, "canonical_session_image_path")
+                != image_path
+            ):
+                return
+            matches = [
+                (index, path)
+                for index, path in enumerate(self.labeling_widget.image_list)
+                if _canonical(path) == image_path
+            ]
+            if len(matches) != 1:
+                return
+            index, listed_path = matches[0]
+            if self.labeling_widget.fn_to_index.get(str(listed_path)) != index:
+                return
+            file_list = self.labeling_widget.file_list_widget
+            item = file_list.item(index)
+            if item is None or _canonical(item.text()) != image_path:
+                return
+            item.setCheckState(QtCore.Qt.Checked)
+        except Exception:
+            # The label transaction is already complete; UI drift is non-fatal.
+            return
 
     def _on_phase_changed(self, phase):
         self.progress.set_phase(phase)
