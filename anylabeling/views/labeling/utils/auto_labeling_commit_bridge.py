@@ -7,7 +7,14 @@ from .auto_labeling_commit import (
     atomic_delete_label_document,
     resolve_existing_label,
 )
-from .auto_labeling_run_store import build_annotation_commit_event_v1
+from .auto_labeling_contracts import (
+    canonical_document_digest_v1,
+    semantic_annotation_digest_v1,
+)
+from .auto_labeling_run_store import (
+    build_annotation_commit_event_v1,
+    build_annotation_commit_event_v2,
+)
 
 
 class AnnotationCommitBridgeError(RuntimeError):
@@ -73,7 +80,7 @@ class AnnotationCommitBridgeV1:
 
     def _target(self, image_path):
         context = getattr(self.widget, "auto_labeling_host_context", None)
-        if context is not None and getattr(context, "active_run_id", None):
+        if context is not None and hasattr(context, "annotation_item_store"):
             canonical_image = _canonical(image_path)
             record = context.image_records_by_path.get(canonical_image)
             if record is None:
@@ -81,17 +88,15 @@ class AnnotationCommitBridgeV1:
                     "manual_save_image_identity_missing"
                 )
             image_id = _record_value(record, "image_id")
-            item = context.run_store.read_item(
-                context.active_run_id,
-                image_id,
-            )
+            item = context.annotation_item_store.read_item(image_id)
             return {
+                "event_schema_version": 2,
                 "project_id": context.project_id,
                 "session_id": context.active_session_id,
-                "run_id": context.active_run_id,
                 "image_id": image_id,
-                "attempt_id": item.get("latest_attempt_id"),
-                "item_revision": item["item_revision"],
+                "item_revision": item["revision"],
+                "document_digest": item["staged_document_digest"],
+                "semantic_digest": item["staged_semantic_digest"],
                 "label_path": _canonical(
                     _record_value(record, "canonical_session_label_path")
                 ),
@@ -100,7 +105,12 @@ class AnnotationCommitBridgeV1:
                     "source_image_digest",
                 ),
                 "sink": context.annotation_commit_sink,
+                "item_store": context.annotation_item_store,
             }
+        if context is not None:
+            raise AnnotationCommitBridgeError(
+                "image_annotation_host_context_missing_item_store"
+            )
         client = self._standalone_client()
         binding = getattr(client, "commit_binding", None)
         if callable(binding):
@@ -166,6 +176,11 @@ class AnnotationCommitBridgeV1:
 
     @staticmethod
     def _target_matches_event(target, event):
+        if event.get("event_schema_version") == 2:
+            return all(
+                target[field] == event[field]
+                for field in ("project_id", "session_id", "image_id")
+            )
         return all(
             target[field] == event[field]
             for field in (
@@ -176,6 +191,83 @@ class AnnotationCommitBridgeV1:
                 "attempt_id",
             )
         )
+
+    def prepare_saved_label(
+        self,
+        writer_kind,
+        image_path,
+        label_path,
+        document,
+        current,
+    ):
+        """Persist a V2 intent before LabelFile performs atomic replace."""
+
+        if writer_kind not in {"MANUAL_SAVE", "AUTO_SAVE"}:
+            raise AnnotationCommitBridgeError("invalid_manual_writer_kind")
+        if self._pending_commit is not None:
+            raise AnnotationCommitBridgeError(
+                "manual_commit_recovery_required"
+            )
+        if getattr(self.widget, "_sequence_presentation_session", None):
+            return "PRESENTATION_NO_EVENT"
+        target = self._target(image_path)
+        if target is None or target.get("event_schema_version") != 2:
+            return "NO_V2_INTENT"
+        canonical_label = _canonical(label_path)
+        if canonical_label != target["label_path"]:
+            raise AnnotationCommitBridgeError(
+                "manual_save_non_authoritative_path"
+            )
+        if (
+            current.document_digest != target["document_digest"]
+            or current.semantic_digest != target["semantic_digest"]
+        ):
+            raise AnnotationCommitBridgeError(
+                "manual_commit_pre_digest_conflict"
+            )
+        intended_document = canonical_document_digest_v1(document)
+        intended_semantic = semantic_annotation_digest_v1(document)
+        event = build_annotation_commit_event_v2(
+            project_id=target["project_id"],
+            session_id=target["session_id"],
+            image_id=target["image_id"],
+            base_session_item_revision=target["item_revision"],
+            writer=writer_kind,
+            pre_document_digest=current.document_digest,
+            pre_semantic_digest=current.semantic_digest,
+            intended_document_digest=intended_document,
+            intended_semantic_digest=intended_semantic,
+            model_fingerprint=None,
+        )
+        self._pending_commit = {
+            "event": copy.deepcopy(event),
+            "image_path": _canonical(image_path),
+            "label_path": canonical_label,
+            "raw_file_sha256": None,
+            "document_digest": intended_document,
+            "semantic_digest": intended_semantic,
+        }
+        try:
+            result = target["sink"].prepare(
+                copy.deepcopy(event),
+                label_path=canonical_label,
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", "manual_commit_sink_failed")
+            self._mark_failure(code, exc, image_path, canonical_label)
+            raise AnnotationCommitBridgeError(code, exc) from exc
+        return result
+
+    def mark_write_failure(self, error, image_path, label_path):
+        if self._pending_commit is None:
+            return False
+        self._mark_failure(
+            getattr(error, "code", "label_write_failed"),
+            error,
+            image_path,
+            label_path,
+        )
+        return True
 
     def _publish(self, writer_kind, image_path, label_path, current):
         if self._pending_commit is not None:
@@ -193,6 +285,8 @@ class AnnotationCommitBridgeV1:
             raise AnnotationCommitBridgeError(
                 "manual_save_non_authoritative_path"
             )
+        if target.get("event_schema_version") == 2:
+            raise AnnotationCommitBridgeError("manual_commit_intent_missing")
         sink = target["sink"]
         event = build_annotation_commit_event_v1(
             project_id=target["project_id"],
@@ -245,6 +339,38 @@ class AnnotationCommitBridgeV1:
             )
             self._ensure_failure_marked(error, image_path, label_path)
             raise error
+        pending = self._pending_commit
+        if (
+            pending is not None
+            and pending["event"].get("event_schema_version") == 2
+        ):
+            event = pending["event"]
+            if (
+                event["writer"] != writer_kind
+                or pending["image_path"] != _canonical(image_path)
+                or pending["label_path"] != _canonical(label_path)
+                or current.document_digest != event["intended_document_digest"]
+                or current.semantic_digest != event["intended_semantic_digest"]
+            ):
+                error = AnnotationCommitBridgeError(
+                    "manual_commit_pending_disk_mismatch"
+                )
+                self._ensure_failure_marked(error, image_path, label_path)
+                raise error
+            target = self._target(image_path)
+            try:
+                result = target["sink"].checkpoint(
+                    copy.deepcopy(event),
+                    label_path=pending["label_path"],
+                )
+            except Exception as exc:
+                code = getattr(exc, "code", "manual_commit_sink_failed")
+                self._mark_failure(code, exc, image_path, label_path)
+                raise AnnotationCommitBridgeError(code, exc) from exc
+            self.widget._loaded_label_path = _canonical(label_path)
+            self.widget._loaded_label_document_digest = current.document_digest
+            self._clear_failure()
+            return result
         try:
             result = self._publish(
                 writer_kind,
@@ -273,6 +399,44 @@ class AnnotationCommitBridgeV1:
             self._ensure_failure_marked(error, image_path, canonical_label)
             raise error
         pre_digest = self.pre_document_digest(canonical_label)
+        current = resolve_existing_label(canonical_label)
+        if target is not None and target.get("event_schema_version") == 2:
+            if (
+                current.document_digest != target["document_digest"]
+                or current.semantic_digest != target["semantic_digest"]
+            ):
+                raise AnnotationCommitBridgeError(
+                    "manual_commit_pre_digest_conflict"
+                )
+            event = build_annotation_commit_event_v2(
+                project_id=target["project_id"],
+                session_id=target["session_id"],
+                image_id=target["image_id"],
+                base_session_item_revision=target["item_revision"],
+                writer="DELETE_LABEL",
+                pre_document_digest=current.document_digest,
+                pre_semantic_digest=current.semantic_digest,
+                intended_document_digest="MISSING",
+                intended_semantic_digest="MISSING",
+                model_fingerprint=None,
+            )
+            self._pending_commit = {
+                "event": copy.deepcopy(event),
+                "image_path": _canonical(image_path),
+                "label_path": canonical_label,
+                "raw_file_sha256": None,
+                "document_digest": "MISSING",
+                "semantic_digest": "MISSING",
+            }
+            try:
+                target["sink"].prepare(
+                    copy.deepcopy(event),
+                    label_path=canonical_label,
+                )
+            except Exception as exc:
+                code = getattr(exc, "code", "manual_commit_sink_failed")
+                self._mark_failure(code, exc, image_path, canonical_label)
+                raise AnnotationCommitBridgeError(code, exc) from exc
         try:
             missing = atomic_delete_label_document(
                 canonical_label,
@@ -290,6 +454,18 @@ class AnnotationCommitBridgeV1:
             raise error from exc
         self.widget._loaded_label_path = canonical_label
         self.widget._loaded_label_document_digest = "MISSING"
+        if target is not None and target.get("event_schema_version") == 2:
+            try:
+                result = target["sink"].checkpoint(
+                    copy.deepcopy(event),
+                    label_path=canonical_label,
+                )
+            except Exception as exc:
+                code = getattr(exc, "code", "manual_commit_sink_failed")
+                self._mark_failure(code, exc, image_path, canonical_label)
+                raise AnnotationCommitBridgeError(code, exc) from exc
+            self._clear_failure()
+            return result
         try:
             return self._publish(
                 "DELETE_LABEL",
@@ -345,6 +521,61 @@ class AnnotationCommitBridgeV1:
             pending["document_digest"],
             pending["semantic_digest"],
         )
+        if event.get("event_schema_version") == 2:
+            intended = (
+                event["intended_document_digest"],
+                event["intended_semantic_digest"],
+            )
+            pre = (
+                event["pre_document_digest"],
+                event["pre_semantic_digest"],
+            )
+            observed_v2 = (current.document_digest, current.semantic_digest)
+            if observed_v2 == pre:
+                store = target.get("item_store")
+                recover = getattr(store, "recover_commit", None)
+                if not callable(recover):
+                    raise AnnotationCommitBridgeError(
+                        "manual_commit_recovery_service_unavailable"
+                    )
+                action, _item = recover(
+                    event["image_id"],
+                    current.document_digest,
+                    current.semantic_digest,
+                )
+                if action != "RETRY":
+                    raise AnnotationCommitBridgeError(
+                        "manual_commit_recovery_failed", action
+                    )
+                self._clear_failure()
+                return "ROLLED_BACK"
+            if observed_v2 != intended:
+                code = "manual_commit_pending_disk_mismatch"
+                self._mark_failure(
+                    code,
+                    code,
+                    image_path,
+                    pending["label_path"],
+                )
+                raise AnnotationCommitBridgeError(code)
+            try:
+                result = target["sink"].checkpoint(
+                    copy.deepcopy(event),
+                    label_path=pending["label_path"],
+                )
+            except Exception as exc:
+                code = getattr(exc, "code", "manual_commit_sink_failed")
+                self._mark_failure(
+                    code,
+                    exc,
+                    image_path,
+                    pending["label_path"],
+                )
+                raise AnnotationCommitBridgeError(code, exc) from exc
+            self.widget._loaded_label_path = pending["label_path"]
+            self.widget._loaded_label_document_digest = current.document_digest
+            self._clear_failure()
+            return result
         if observed != intended:
             code = "manual_commit_pending_disk_mismatch"
             self._mark_failure(

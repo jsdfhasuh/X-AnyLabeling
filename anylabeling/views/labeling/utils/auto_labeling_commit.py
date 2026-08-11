@@ -37,10 +37,8 @@ from .image import decode_image_for_labeling
 
 WRITE_POLICIES_V1 = frozenset(
     {
-        "INHERIT_MODEL_POLICY",
         "SKIP_EXISTING",
         "FORCE_REPLACE",
-        "FORCE_MERGE",
     }
 )
 MAX_GROUP_ID_V1 = (2**31) - 1
@@ -558,41 +556,16 @@ def compose_final_label_document(
             zero_target=prediction.zero_target,
             skip_reason="existing_annotation",
         )
-    if write_policy == "FORCE_REPLACE":
-        effective_policy = "FORCE_REPLACE"
-    elif write_policy == "FORCE_MERGE":
-        effective_policy = "FORCE_MERGE"
-    elif write_policy == "INHERIT_MODEL_POLICY":
-        effective_policy = (
-            "FORCE_REPLACE" if prediction.replace else "FORCE_MERGE"
-        )
-    else:
-        effective_policy = (
-            "FORCE_REPLACE" if prediction.replace else "FORCE_MERGE"
-        )
+    effective_policy = "FORCE_REPLACE"
     existing_document = (
         validate_label_document(existing_label.document)
         if existing_is_valid
         else None
     )
-    existing_shapes = (
-        copy.deepcopy(existing_document["shapes"])
-        if existing_document is not None
-        else []
-    )
     incoming_shapes = [copy.deepcopy(shape) for shape in prediction.shapes]
-    if effective_policy == "FORCE_REPLACE":
-        for shape in incoming_shapes:
-            _validate_group_id(shape.get("group_id"))
-        final_shapes = incoming_shapes
-    else:
-        incoming_shapes = remap_incoming_group_ids_v1(
-            existing_shapes,
-            incoming_shapes,
-            pose_config=pose_config,
-            kie_linking_adapter=kie_linking_adapter,
-        )
-        final_shapes = existing_shapes + incoming_shapes
+    for shape in incoming_shapes:
+        _validate_group_id(shape.get("group_id"))
+    final_shapes = incoming_shapes
     supplied_other = _plain_json_value(other_data or {}, "$other_data")
     if type(supplied_other) is not dict:
         _fail_contract("invalid_other_data", "$other_data")
@@ -1008,6 +981,174 @@ def _mark_conflict(store, image_id, conflict_code):
     )
 
 
+def _is_v2_commit_sink(event_sink):
+    return event_sink is not None and all(
+        callable(getattr(event_sink, name, None))
+        for name in ("prepare", "checkpoint")
+    )
+
+
+def _publish_v1_commit_event(
+    *,
+    v2_sink,
+    current_event,
+    event_sink,
+    store,
+    project_id,
+    session_id,
+    run_id,
+    image_id,
+    attempt_id,
+    document_digest,
+    semantic_digest,
+    source_image_digest,
+    base_item_revision,
+    item,
+):
+    if v2_sink:
+        return current_event, item
+    if event_sink is None and all(
+        value is None for value in (project_id, session_id, run_id)
+    ):
+        return None, item
+    from .auto_labeling_run_store import build_annotation_commit_event_v1
+
+    event = build_annotation_commit_event_v1(
+        project_id=project_id,
+        session_id=session_id,
+        run_id=run_id,
+        image_id=image_id,
+        attempt_id=attempt_id,
+        writer_kind="CONTINUOUS",
+        commit_scope="STAGED",
+        mutation_mode="NOTIFY_ONLY",
+        document_digest=document_digest,
+        semantic_digest=semantic_digest,
+        source_image_digest=source_image_digest,
+        base_item_revision=base_item_revision,
+    )
+    if event_sink is not None:
+        event_sink.publish(event)
+        item = store.read_item(image_id)
+    return event, item
+
+
+def _recover_v2_committed(
+    event_sink,
+    annotation_item_store,
+    image_id,
+    existing,
+):
+    if not _is_v2_commit_sink(event_sink):
+        return False
+    recover = getattr(annotation_item_store, "recover_commit", None)
+    if not callable(recover):
+        raise LabelConflictError("annotation_item_store_recovery_unavailable")
+    action, _authority_item = recover(
+        image_id,
+        existing.document_digest,
+        existing.semantic_digest,
+    )
+    if action not in {"NO_OP", "CHECKPOINTED"}:
+        raise LabelConflictError("conflict_session_item_changed")
+    return True
+
+
+def _already_committed_result(
+    *,
+    store,
+    item,
+    existing,
+    image_id,
+    attempt_id,
+    write_policy,
+    event_sink,
+    project_id,
+    session_id,
+    run_id,
+    source_image_digest,
+    annotation_item_store,
+):
+    staged_document_digest = item["digests"]["staged_document_digest"]
+    if existing.document_digest != staged_document_digest:
+        _mark_conflict(store, image_id, "conflict_committed_document_changed")
+        raise LabelConflictError("conflict_committed_document_changed")
+    summary = item["result_summary"]
+    composition = CompositionResultV1(
+        action="already_committed",
+        effective_policy=write_policy,
+        document=copy.deepcopy(existing.document),
+        document_digest=existing.document_digest,
+        semantic_digest=existing.semantic_digest,
+        semantic_change=summary["semantic_change"],
+        target_count=summary["target_count"],
+        zero_target=summary["zero_target"],
+    )
+    v2_sink = _recover_v2_committed(
+        event_sink,
+        annotation_item_store,
+        image_id,
+        existing,
+    )
+    event, item = _publish_v1_commit_event(
+        v2_sink=v2_sink,
+        current_event=None,
+        event_sink=event_sink,
+        store=store,
+        project_id=project_id,
+        session_id=session_id,
+        run_id=run_id,
+        image_id=image_id,
+        attempt_id=attempt_id,
+        document_digest=existing.document_digest,
+        semantic_digest=existing.semantic_digest,
+        source_image_digest=source_image_digest,
+        base_item_revision=item["item_revision"],
+        item=item,
+    )
+    return ImageCommitResultV1(composition, None, item, event)
+
+
+def _prepare_v2_commit_event(
+    *,
+    event_sink,
+    annotation_item_store,
+    image_id,
+    project_id,
+    session_id,
+    existing,
+    composition,
+    model_fingerprint,
+    label_path,
+):
+    if not _is_v2_commit_sink(event_sink):
+        return None, False
+    if annotation_item_store is None:
+        raise LabelConflictError("annotation_item_store_unavailable")
+    authority_item = annotation_item_store.read_item(image_id)
+    if (
+        authority_item["staged_document_digest"] != existing.document_digest
+        or authority_item["staged_semantic_digest"] != existing.semantic_digest
+    ):
+        raise LabelConflictError("conflict_session_item_changed")
+    from .auto_labeling_run_store import build_annotation_commit_event_v2
+
+    event = build_annotation_commit_event_v2(
+        project_id=project_id,
+        session_id=session_id,
+        image_id=image_id,
+        base_session_item_revision=authority_item["revision"],
+        writer="AUTOMATIC",
+        pre_document_digest=existing.document_digest,
+        pre_semantic_digest=existing.semantic_digest,
+        intended_document_digest=composition.document_digest,
+        intended_semantic_digest=composition.semantic_digest,
+        model_fingerprint=model_fingerprint,
+    )
+    event_sink.prepare(copy.deepcopy(event), label_path=label_path)
+    return event, True
+
+
 def commit_label_for_image_v1(
     *,
     store,
@@ -1032,13 +1173,12 @@ def commit_label_for_image_v1(
     session_id=None,
     run_id=None,
     source_image_digest=None,
+    annotation_item_store=None,
+    model_fingerprint=None,
 ):
-    """Run the sole Phase 1 intent -> label -> checkpoint transaction."""
+    """Run the sole image intent -> label -> checkpoint transaction."""
 
-    from .auto_labeling_run_store import (
-        CommitStoreProtocolV1,
-        build_annotation_commit_event_v1,
-    )
+    from .auto_labeling_run_store import CommitStoreProtocolV1
 
     if not isinstance(store, CommitStoreProtocolV1):
         raise TypeError("store does not implement CommitStoreProtocolV1")
@@ -1050,45 +1190,20 @@ def commit_label_for_image_v1(
         item["staged_commit_status"] == "committed"
         and item["execution_status"] == "succeeded"
     ):
-        staged_document_digest = item["digests"]["staged_document_digest"]
-        if existing.document_digest != staged_document_digest:
-            _mark_conflict(
-                store, image_id, "conflict_committed_document_changed"
-            )
-            raise LabelConflictError("conflict_committed_document_changed")
-        summary = item["result_summary"]
-        composition = CompositionResultV1(
-            action="already_committed",
-            effective_policy=write_policy,
-            document=copy.deepcopy(existing.document),
-            document_digest=existing.document_digest,
-            semantic_digest=existing.semantic_digest,
-            semantic_change=summary["semantic_change"],
-            target_count=summary["target_count"],
-            zero_target=summary["zero_target"],
+        return _already_committed_result(
+            store=store,
+            item=item,
+            existing=existing,
+            image_id=image_id,
+            attempt_id=attempt_id,
+            write_policy=write_policy,
+            event_sink=event_sink,
+            project_id=project_id,
+            session_id=session_id,
+            run_id=run_id,
+            source_image_digest=source_image_digest,
+            annotation_item_store=annotation_item_store,
         )
-        event = None
-        if event_sink is not None or any(
-            value is not None for value in (project_id, session_id, run_id)
-        ):
-            event = build_annotation_commit_event_v1(
-                project_id=project_id,
-                session_id=session_id,
-                run_id=run_id,
-                image_id=image_id,
-                attempt_id=attempt_id,
-                writer_kind="CONTINUOUS",
-                commit_scope="STAGED",
-                mutation_mode="NOTIFY_ONLY",
-                document_digest=existing.document_digest,
-                semantic_digest=existing.semantic_digest,
-                source_image_digest=source_image_digest,
-                base_item_revision=item["item_revision"],
-            )
-        if event_sink is not None:
-            event_sink.publish(event)
-            item = store.read_item(image_id)
-        return ImageCommitResultV1(composition, None, item, event)
     if item["staged_commit_status"] == "prepared":
         raise LabelConflictError("prepared_commit_requires_recovery")
     try:
@@ -1128,6 +1243,17 @@ def commit_label_for_image_v1(
         "phase": "prepared",
     }
     _fault(store, "before_intent")
+    event, v2_sink = _prepare_v2_commit_event(
+        event_sink=event_sink,
+        annotation_item_store=annotation_item_store,
+        image_id=image_id,
+        project_id=project_id,
+        session_id=session_id,
+        existing=existing,
+        composition=composition,
+        model_fingerprint=model_fingerprint,
+        label_path=label_path,
+    )
     prepared = store.write_commit_intent(
         image_id,
         attempt_id,
@@ -1165,29 +1291,26 @@ def commit_label_for_image_v1(
         zero_target=composition.zero_target,
         semantic_change=composition.semantic_change,
     )
+    if v2_sink:
+        event_sink.checkpoint(copy.deepcopy(event), label_path=label_path)
     _fault(store, "after_checkpoint_before_summary")
     store.rebuild_summary()
-    event = None
-    if event_sink is not None or any(
-        value is not None for value in (project_id, session_id, run_id)
-    ):
-        event = build_annotation_commit_event_v1(
-            project_id=project_id,
-            session_id=session_id,
-            run_id=run_id,
-            image_id=image_id,
-            attempt_id=attempt_id,
-            writer_kind="CONTINUOUS",
-            commit_scope="STAGED",
-            mutation_mode="NOTIFY_ONLY",
-            document_digest=write_result.document_digest,
-            semantic_digest=write_result.semantic_digest,
-            source_image_digest=source_image_digest,
-            base_item_revision=checkpoint["item_revision"],
-        )
-    if event_sink is not None:
-        event_sink.publish(event)
-        checkpoint = store.read_item(image_id)
+    event, checkpoint = _publish_v1_commit_event(
+        v2_sink=v2_sink,
+        current_event=event,
+        event_sink=event_sink,
+        store=store,
+        project_id=project_id,
+        session_id=session_id,
+        run_id=run_id,
+        image_id=image_id,
+        attempt_id=attempt_id,
+        document_digest=write_result.document_digest,
+        semantic_digest=write_result.semantic_digest,
+        source_image_digest=source_image_digest,
+        base_item_revision=checkpoint["item_revision"],
+        item=checkpoint,
+    )
     return ImageCommitResultV1(composition, write_result, checkpoint, event)
 
 

@@ -5365,10 +5365,10 @@ Original images backed up to:
     <message><source>All</source><translation>All</translation></message>
     <message><source>Only images without a valid annotation</source><translation>Only images without a valid annotation</translation></message>
     <message><source>Filter</source><translation>Filter</translation></message>
-    <message><source>Inherit model policy</source><translation>Inherit model policy</translation></message>
     <message><source>Skip existing annotations</source><translation>Skip existing annotations</translation></message>
     <message><source>Force replace</source><translation>Force replace</translation></message>
-    <message><source>Force merge</source><translation>Force merge</translation></message>
+    <message><source>Confirm replacement</source><translation>Confirm replacement</translation></message>
+    <message><source>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</source><translation>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</translation></message>
     <message><source>Write policy</source><translation>Write policy</translation></message>
     <message><source> s</source><translation> s</translation></message>
     <message><source>Dwell time</source><translation>Dwell time</translation></message>
@@ -5400,6 +5400,11 @@ Original images backed up to:
     <message><source>Explicit error skips</source><translation>Explicit error skips</translation></message>
     <message><source>Conflicts</source><translation>Conflicts</translation></message>
     <message><source>Pending review</source><translation>Pending review</translation></message>
+    <message><source>Pending review {count}</source><translation>Pending review {count}</translation></message>
+    <message><source>Labels</source><translation>Labels</translation></message>
+    <message><source>Auto labeling</source><translation>Auto labeling</translation></message>
+    <message><source>Review ({count})</source><translation>Review ({count})</translation></message>
+    <message><source>No pending image in this session.</source><translation>No pending image in this session.</translation></message>
     <message><source>Remaining</source><translation>Remaining</translation></message>
     <message><source>Processing status</source><translation>Processing status</translation></message>
     <message><source>Completed with errors</source><translation>Completed with errors</translation></message>
@@ -5430,7 +5435,6 @@ Original images backed up to:
     <message><source>Stop continuous auto-labeling</source><translation>Stop continuous auto-labeling</translation></message>
     <message><source>Cannot continue continuous auto-labeling</source><translation>Cannot continue continuous auto-labeling</translation></message>
     <message><source>Cannot start continuous auto-labeling</source><translation>Cannot start continuous auto-labeling</translation></message>
-    <message><source>An unfinished continuous auto-labeling run already exists (run {run_id}). Close this labeling window, then choose &quot;Process remaining auto-labeling&quot; from the project labeling menu. Saved results from the existing run are preserved.</source><translation>An unfinished continuous auto-labeling run already exists (run {run_id}). Close this labeling window, then choose &quot;Process remaining auto-labeling&quot; from the project labeling menu. Saved results from the existing run are preserved.</translation></message>
     <message><source>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</source><translation>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</translation></message>
     <message><source>Continuous auto-labeling is already running.</source><translation>Continuous auto-labeling is already running.</translation></message>
     <message><source>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</source><translation>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</translation></message>
@@ -5447,6 +5451,8 @@ Original images backed up to:
     <message><source>staged={staged}  |  source={source}  |  target_count={target_count}  |  zero_target={zero_target}</source><translation>staged={staged}  |  source={source}  |  target_count={target_count}  |  zero_target={zero_target}</translation></message>
     <message><source>Session approved {staged_approved}  |  source approved {source_approved}  |  needs fix {needs_fix}  |  pending {pending}  |  stale {stale}</source><translation>Session approved {staged_approved}  |  source approved {source_approved}  |  needs fix {needs_fix}  |  pending {pending}  |  stale {stale}</translation></message>
     <message><source>Audit action failed</source><translation>Audit action failed</translation></message>
+    <message><source>Unsaved annotation</source><translation>Unsaved annotation</translation></message>
+    <message><source>Save or discard the current changes before switching review images.</source><translation>Save or discard the current changes before switching review images.</translation></message>
     <message><source>Not applicable</source><translation>Not applicable</translation></message>
     <message><source>Pending</source><translation>Pending</translation></message>
     <message><source>Staged approved</source><translation>Staged approved</translation></message>

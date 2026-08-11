@@ -182,6 +182,15 @@ class LabelingWidget(LabelDialog):
         self.auto_labeling_commit_error = None
         self._standalone_auto_labeling_audit_client = None
         self._auto_labeling_audit_session = None
+        self._session_pending_review_count = 0
+        self._historical_pending_review_count = int(
+            getattr(
+                self.auto_labeling_host_context,
+                "historical_pending_review_count",
+                0,
+            )
+            or 0
+        )
         self.annotation_commit_bridge = AnnotationCommitBridgeV1(self)
 
         self._no_selection_slot = False
@@ -2038,10 +2047,8 @@ class LabelingWidget(LabelDialog):
         # self.auto_labeling_widget.model_manager.request_next_files_requested.connect(
         #     lambda: self.inform_next_files(self.filename)
         # )
-        self.auto_labeling_widget.hide()  # Hide by default
         central_layout.addWidget(self.label_instruction)
         central_layout.addSpacing(5)
-        central_layout.addWidget(self.auto_labeling_widget)
         central_layout.addWidget(scroll_area)
         central_layout.addWidget(self.compare_view_slider)
         layout.addItem(central_layout)
@@ -2054,6 +2061,11 @@ class LabelingWidget(LabelDialog):
 
         right_sidebar_layout = QVBoxLayout()
         right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_sidebar_tabs = QtWidgets.QTabWidget()
+        self.right_sidebar_tabs.setMinimumWidth(300)
+        self.labels_sidebar_page = QWidget()
+        labels_sidebar_layout = QVBoxLayout(self.labels_sidebar_page)
+        labels_sidebar_layout.setContentsMargins(0, 0, 0, 0)
 
         # Thumbnail image display
         self.thumbnail_pixmap = None
@@ -2068,7 +2080,7 @@ class LabelingWidget(LabelDialog):
         thumbnail_image_layout.addWidget(self.thumbnail_image_label)
         self.thumbnail_container.setLayout(thumbnail_image_layout)
         self.thumbnail_container.hide()
-        right_sidebar_layout.addWidget(self.thumbnail_container)
+        labels_sidebar_layout.addWidget(self.thumbnail_container)
 
         # Shape attributes
         self.shape_attributes = QLabel(self.tr("Attributes"))
@@ -2086,10 +2098,10 @@ class LabelingWidget(LabelDialog):
         if not self.attributes:
             self.shape_attributes.hide()
             self.scroll_area.hide()
-        right_sidebar_layout.addWidget(
+        labels_sidebar_layout.addWidget(
             self.shape_attributes, 0, Qt.AlignCenter
         )
-        right_sidebar_layout.addWidget(self.scroll_area)
+        labels_sidebar_layout.addWidget(self.scroll_area)
 
         # Shape text label with checkbox
         self.shape_text_label = QLabel("Object Text")
@@ -2109,9 +2121,9 @@ class LabelingWidget(LabelDialog):
         description_header_widget = QWidget()
         description_header_widget.setLayout(description_header_layout)
 
-        right_sidebar_layout.addWidget(description_header_widget)
-        right_sidebar_layout.addWidget(self.shape_text_edit)
-        right_sidebar_layout.addWidget(self.flag_dock)
+        labels_sidebar_layout.addWidget(description_header_widget)
+        labels_sidebar_layout.addWidget(self.shape_text_edit)
+        labels_sidebar_layout.addWidget(self.flag_dock)
 
         # Labels with checkbox
         self.labels_checkbox = QCheckBox()
@@ -2127,13 +2139,13 @@ class LabelingWidget(LabelDialog):
         labels_header_layout.addWidget(self.labels_checkbox)
         labels_header_widget = QWidget()
         labels_header_widget.setLayout(labels_header_layout)
-        right_sidebar_layout.addWidget(labels_header_widget)
+        labels_sidebar_layout.addWidget(labels_header_widget)
 
         # Hide the original dock title bar
         empty_widget = QWidget()
         empty_widget.setFixedHeight(0)
         self.label_dock.setTitleBarWidget(empty_widget)
-        right_sidebar_layout.addWidget(self.label_dock)
+        labels_sidebar_layout.addWidget(self.label_dock)
 
         # Create a horizontal layout for the filters and select button
         filter_layout = QHBoxLayout()
@@ -2142,9 +2154,9 @@ class LabelingWidget(LabelDialog):
         filter_layout.addWidget(self.label_filter_combobox, 2)
         filter_layout.addWidget(self.gid_filter_combobox, 1)
         filter_layout.addWidget(self.select_toggle_button, 0)
-        right_sidebar_layout.addLayout(filter_layout)
-        right_sidebar_layout.addWidget(self.shape_dock)
-        right_sidebar_layout.addWidget(self.file_dock)
+        labels_sidebar_layout.addLayout(filter_layout)
+        labels_sidebar_layout.addWidget(self.shape_dock)
+        labels_sidebar_layout.addWidget(self.file_dock)
         self.file_dock.setFeatures(QDockWidget.DockWidgetFloatable)
         dock_features = (
             ~QDockWidget.DockWidgetMovable
@@ -2166,6 +2178,43 @@ class LabelingWidget(LabelDialog):
         )
 
         self.shape_text_edit.textChanged.connect(self.shape_text_changed)
+
+        self.auto_labeling_sidebar_page = QWidget()
+        auto_labeling_sidebar_layout = QVBoxLayout(
+            self.auto_labeling_sidebar_page
+        )
+        auto_labeling_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        auto_labeling_sidebar_layout.addWidget(self.auto_labeling_widget)
+        auto_labeling_sidebar_layout.addStretch(1)
+
+        self.audit_sidebar_page = QWidget()
+        self.audit_sidebar_layout = QVBoxLayout(self.audit_sidebar_page)
+        self.audit_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        self.audit_empty_label = QLabel(auto_labeling_text_v1("audit_empty"))
+        self.audit_empty_label.setWordWrap(True)
+        self.audit_empty_label.setAlignment(Qt.AlignCenter)
+        self.audit_open_button = QPushButton()
+        self.audit_open_button.clicked.connect(self.open_auto_labeling_review)
+        self.audit_sidebar_layout.addStretch(1)
+        self.audit_sidebar_layout.addWidget(self.audit_empty_label)
+        self.audit_sidebar_layout.addWidget(self.audit_open_button)
+        self.audit_sidebar_layout.addStretch(1)
+
+        self.right_sidebar_tabs.addTab(
+            self.labels_sidebar_page,
+            auto_labeling_text_v1("labels_tab"),
+        )
+        self.right_sidebar_tabs.addTab(
+            self.auto_labeling_sidebar_page,
+            auto_labeling_text_v1("auto_labeling_tab"),
+        )
+        self.right_sidebar_tabs.addTab(self.audit_sidebar_page, "")
+        self.right_sidebar_tabs.setCurrentWidget(self.labels_sidebar_page)
+        self.right_sidebar_tabs.currentChanged.connect(
+            self._right_sidebar_tab_changed
+        )
+        right_sidebar_layout.addWidget(self.right_sidebar_tabs)
+        self._refresh_pending_review_controls()
 
         layout.addItem(right_sidebar_layout)
         self.setLayout(layout)
@@ -3811,6 +3860,15 @@ class LabelingWidget(LabelDialog):
                 pre_document_digest=(
                     self.annotation_commit_bridge.pre_document_digest(filename)
                 ),
+                before_write=lambda document, current: (
+                    self.annotation_commit_bridge.prepare_saved_label(
+                        "MANUAL_SAVE",
+                        self.filename,
+                        filename,
+                        document,
+                        current,
+                    )
+                ),
             )
             self.label_file = label_file
             self.annotation_commit_bridge.publish_saved_label(
@@ -3836,6 +3894,11 @@ class LabelingWidget(LabelDialog):
             )
             return False
         except LabelFileError as e:
+            self.annotation_commit_bridge.mark_write_failure(
+                e,
+                self.filename,
+                filename,
+            )
             self.error_message(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
@@ -4097,6 +4160,15 @@ class LabelingWidget(LabelDialog):
                 pre_document_digest=(
                     self.annotation_commit_bridge.pre_document_digest(filename)
                 ),
+                before_write=lambda document, current: (
+                    self.annotation_commit_bridge.prepare_saved_label(
+                        writer_kind,
+                        self.filename,
+                        filename,
+                        document,
+                        current,
+                    )
+                ),
             )
             self.label_file = label_file
             self.annotation_commit_bridge.publish_saved_label(
@@ -4122,6 +4194,11 @@ class LabelingWidget(LabelDialog):
             )
             return False
         except LabelFileError as e:
+            self.annotation_commit_bridge.mark_write_failure(
+                e,
+                self.filename,
+                filename,
+            )
             self.error_message(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
@@ -5042,6 +5119,16 @@ class LabelingWidget(LabelDialog):
         auto_widget = getattr(self, "auto_labeling_widget", None)
         if auto_widget is not None:
             auto_widget.set_auto_labeling_host_context(context)
+        self._historical_pending_review_count = int(
+            getattr(context, "historical_pending_review_count", 0) or 0
+        )
+        refresh_pending = getattr(
+            self,
+            "_refresh_pending_review_controls",
+            None,
+        )
+        if callable(refresh_pending):
+            refresh_pending()
         return context
 
     def start_auto_labeling_review(self, client=None):
@@ -5067,6 +5154,87 @@ class LabelingWidget(LabelDialog):
             return True
         self._auto_labeling_audit_session = None
         return False
+
+    def open_auto_labeling_review(self):
+        """Open current Session review or request a historical review Session."""
+
+        if self._auto_labeling_audit_session is not None:
+            self.right_sidebar_tabs.setCurrentWidget(self.audit_sidebar_page)
+            return True
+        context = self.auto_labeling_host_context
+        if self._session_pending_review_count > 0:
+            client = (
+                getattr(context, "audit_client", None) if context else None
+            )
+            return self.start_auto_labeling_review(client)
+        if self._historical_pending_review_count > 0 and context is not None:
+            callback = getattr(context, "request_historical_review", None)
+            if callable(callback):
+                return callback() is not False
+        client = getattr(context, "audit_client", None) if context else None
+        if client is not None:
+            return self.start_auto_labeling_review(client)
+        return False
+
+    def create_auto_labeling_audit_panel(self):
+        from .widgets.auto_labeling_audit_dialog import AutoLabelingAuditPanel
+
+        return AutoLabelingAuditPanel(self.audit_sidebar_page)
+
+    def show_auto_labeling_audit_panel(self, panel):
+        self.audit_empty_label.hide()
+        self.audit_open_button.hide()
+        self.audit_sidebar_layout.insertWidget(0, panel)
+        panel.show()
+        self.right_sidebar_tabs.setCurrentWidget(self.audit_sidebar_page)
+
+    def remove_auto_labeling_audit_panel(self, panel):
+        self.audit_sidebar_layout.removeWidget(panel)
+        panel.hide()
+        panel.deleteLater()
+        self.audit_empty_label.show()
+        self.audit_open_button.show()
+        self._refresh_pending_review_controls()
+
+    def set_auto_labeling_pending_review_count(
+        self, count, *, scope="session"
+    ):
+        count = max(0, int(count or 0))
+        if scope == "historical":
+            self._historical_pending_review_count = count
+        else:
+            self._session_pending_review_count = count
+        self._refresh_pending_review_controls()
+
+    def _refresh_pending_review_controls(self):
+        total = (
+            self._session_pending_review_count
+            + self._historical_pending_review_count
+        )
+        text = auto_labeling_text_v1("pending_review_count", count=total)
+        if hasattr(self, "audit_open_button"):
+            self.audit_open_button.setText(text)
+            self.audit_open_button.setEnabled(total > 0)
+        if hasattr(self, "right_sidebar_tabs"):
+            index = self.right_sidebar_tabs.indexOf(self.audit_sidebar_page)
+            if index >= 0:
+                self.right_sidebar_tabs.setTabText(
+                    index,
+                    auto_labeling_text_v1("audit_tab", count=total),
+                )
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            setter = getattr(auto_widget, "set_pending_review_count", None)
+            if callable(setter):
+                setter(total)
+
+    def _right_sidebar_tab_changed(self, _index):
+        is_auto = (
+            self.right_sidebar_tabs.currentWidget()
+            is self.auto_labeling_sidebar_page
+        )
+        self.actions.run_all_images.setEnabled(is_auto)
+        self.update_thumbnail_display()
 
     def set_auto_labeling_images_ready(self, ready):
         if self.auto_labeling_host_context is not None:
@@ -5412,11 +5580,6 @@ class LabelingWidget(LabelDialog):
     def change_output_dir_dialog(self, _value=False):
         if getattr(self, "auto_labeling_audit_active", False) or (
             self.auto_labeling_host_context is not None
-            and getattr(
-                self.auto_labeling_host_context,
-                "active_run_id",
-                None,
-            )
         ):
             return False
         default_output_dir = self.output_dir
@@ -5493,11 +5656,6 @@ class LabelingWidget(LabelDialog):
     def save_file_as(self, _value=False):
         if getattr(self, "auto_labeling_audit_active", False) or (
             self.auto_labeling_host_context is not None
-            and getattr(
-                self.auto_labeling_host_context,
-                "active_run_id",
-                None,
-            )
         ):
             return False
         assert not self.image.isNull(), "cannot save empty image"
@@ -5680,11 +5838,6 @@ class LabelingWidget(LabelDialog):
     def delete_image_file(self):
         if getattr(self, "auto_labeling_audit_active", False) or (
             self.auto_labeling_host_context is not None
-            and getattr(
-                self.auto_labeling_host_context,
-                "active_run_id",
-                None,
-            )
         ):
             return False
         if len(self.image_list) < 2:
@@ -6006,14 +6159,16 @@ class LabelingWidget(LabelDialog):
             self.async_exif_scanner.start_scan(image_files)
 
     def toggle_auto_labeling_widget(self):
-        """Toggle auto labeling widget visibility."""
-        if self.auto_labeling_widget.isVisible():
-            self.auto_labeling_widget.hide()
-            self.actions.run_all_images.setEnabled(False)
+        """Switch between the label and auto-labeling sidebar pages."""
+        if (
+            self.right_sidebar_tabs.currentWidget()
+            is self.auto_labeling_sidebar_page
+        ):
+            self.right_sidebar_tabs.setCurrentWidget(self.labels_sidebar_page)
         else:
-            self.auto_labeling_widget.show()
-            self.actions.run_all_images.setEnabled(True)
-        self.update_thumbnail_display()
+            self.right_sidebar_tabs.setCurrentWidget(
+                self.auto_labeling_sidebar_page
+            )
 
     @pyqtSlot()
     def new_shapes_from_auto_labeling(self, auto_labeling_result):

@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -35,6 +36,8 @@ from anylabeling.views.labeling.utils.auto_labeling_run_store import (
     InjectedCommitCrash,
     StoreConflictError,
     build_annotation_commit_event_v1,
+    build_annotation_commit_event_v2,
+    validate_annotation_commit_event_v2,
 )
 
 
@@ -126,11 +129,8 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
         self,
     ):
         cases = (
-            ("INHERIT_MODEL_POLICY", True),
-            ("INHERIT_MODEL_POLICY", False),
             ("SKIP_EXISTING", True),
             ("FORCE_REPLACE", False),
-            ("FORCE_MERGE", True),
         )
         for policy, replace in cases:
             with self.subTest(policy=policy, replace=replace, targets=1):
@@ -196,57 +196,26 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
                 self.assertEqual(result.document["shapes"], [])
                 self.assertTrue(result.zero_target)
 
-    def test_merge_truth_table_including_zero_target(self):
-        for shapes in ([], [_shape("old")]):
-            with self.subTest(existing_count=len(shapes), targets=1):
-                result = self._compose(
-                    self._existing(shapes),
-                    _prediction([_shape("new")], True),
-                    "FORCE_MERGE",
-                )
-                expected = [shape["label"] for shape in shapes] + ["new"]
-                self.assertEqual(
-                    [shape["label"] for shape in result.document["shapes"]],
-                    expected,
-                )
-            with self.subTest(existing_count=len(shapes), targets=0):
-                result = self._compose(
-                    self._existing(shapes),
-                    _prediction([], True),
-                    "FORCE_MERGE",
-                )
-                self.assertEqual(result.document["shapes"], shapes)
-
-    def test_inherit_uses_explicit_model_replace_policy(self):
+    def test_retired_merge_and_inherit_policies_are_rejected(self):
         existing = self._existing([_shape("old")])
-        replaced = self._compose(
-            existing,
-            _prediction([_shape("new")], True),
-            "INHERIT_MODEL_POLICY",
-        )
-        merged = self._compose(
-            existing,
-            _prediction([_shape("new")], False),
-            "INHERIT_MODEL_POLICY",
-        )
-        self.assertEqual(
-            [shape["label"] for shape in replaced.document["shapes"]],
-            ["new"],
-        )
-        self.assertEqual(
-            [shape["label"] for shape in merged.document["shapes"]],
-            ["old", "new"],
-        )
+        for policy in ("INHERIT_MODEL_POLICY", "FORCE_MERGE"):
+            with self.subTest(policy=policy):
+                with self.assertRaisesRegex(
+                    ValueError, "unsupported write policy"
+                ):
+                    self._compose(
+                        existing,
+                        _prediction([_shape("new")], True),
+                        policy,
+                    )
 
     def test_corrupt_label_is_never_overwritten_by_any_policy(self):
         self.label_path.write_text("{not-json", encoding="utf-8")
         existing = resolve_existing_label(self.label_path)
         self.assertEqual(existing.presence, ANNOTATION_PRESENCE_INVALID)
         for policy in (
-            "INHERIT_MODEL_POLICY",
             "SKIP_EXISTING",
             "FORCE_REPLACE",
-            "FORCE_MERGE",
         ):
             with self.subTest(policy=policy):
                 with self.assertRaisesRegex(
@@ -280,14 +249,11 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
         self.assertTrue(success.zero_target)
         self.assertEqual(success.document["shapes"], [])
 
-    def test_description_replace_merge_and_empty_rules_are_exact(self):
+    def test_description_replace_and_empty_rules_are_exact(self):
         existing = self._existing([_shape("old")], description="human")
         cases = (
             ("FORCE_REPLACE", "", "human"),
             ("FORCE_REPLACE", "model", "model"),
-            ("FORCE_MERGE", "", "human"),
-            ("FORCE_MERGE", "human", "human"),
-            ("FORCE_MERGE", "model", "human\n\nmodel"),
         )
         for policy, incoming, expected in cases:
             with self.subTest(policy=policy, incoming=incoming):
@@ -299,15 +265,8 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
                     policy,
                 )
                 self.assertEqual(result.document["description"], expected)
-        empty_description = self._existing([_shape("old")], description="")
-        result = self._compose(
-            empty_description,
-            _prediction([_shape("new")], False, "model"),
-            "FORCE_MERGE",
-        )
-        self.assertEqual(result.document["description"], "model")
 
-    def test_flags_unknown_fields_writer_fields_and_shape_order_are_preserved(
+    def test_flags_unknown_fields_and_incoming_shape_order_are_preserved(
         self,
     ):
         existing = self._existing(
@@ -317,7 +276,7 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
         result = self._compose(
             existing,
             _prediction([_shape("third")], False),
-            "FORCE_MERGE",
+            "FORCE_REPLACE",
             flags={"ignored": True},
             other_data={"new_vendor_field": 7},
         )
@@ -326,7 +285,7 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
         self.assertEqual(result.document["new_vendor_field"], 7)
         self.assertEqual(
             [shape["label"] for shape in result.document["shapes"]],
-            ["first", "second", "third"],
+            ["third"],
         )
         self.assertEqual(result.document["imagePath"], "sample.png")
         self.assertIsNone(result.document["imageData"])
@@ -358,7 +317,7 @@ class LabelCompositionTruthTableTests(unittest.TestCase):
         prediction = _prediction([_shape("new", "7")], False, "model")
         existing_before = copy.deepcopy(existing.document)
         prediction_before = copy.deepcopy(prediction)
-        self._compose(existing, prediction, "FORCE_MERGE")
+        self._compose(existing, prediction, "FORCE_REPLACE")
         self.assertEqual(existing.document, existing_before)
         self.assertEqual(prediction, prediction_before)
 
@@ -789,7 +748,7 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
         store.create_item("image-a", "attempt-a")
         return store
 
-    def _commit(self, store, event_sink=None):
+    def _commit(self, store, event_sink=None, **kwargs):
         return commit_label_for_image_v1(
             store=store,
             image_id="image-a",
@@ -799,13 +758,14 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
             image_height=6,
             image_width=8,
             prediction_outcome=self.outcome,
-            write_policy="FORCE_MERGE",
+            write_policy="FORCE_REPLACE",
             allowed_root=self.root,
             event_sink=event_sink,
             project_id="project-a",
             session_id="session-a",
             run_id="run-a",
             source_image_digest="1" * 64,
+            **kwargs,
         )
 
     def _labels(self):
@@ -865,12 +825,12 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
             (
                 "after_label_replace_before_checkpoint",
                 "COMPLETED_CHECKPOINT",
-                ["old", "new"],
+                ["new"],
             ),
             (
                 "after_checkpoint_before_summary",
                 "CHECKPOINT_PRESENT",
-                ["old", "new"],
+                ["new"],
             ),
         )
         for point, expected_action, expected_labels in cases:
@@ -887,7 +847,7 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
                 self.assertEqual(recovery.action, expected_action)
                 self.assertEqual(self._labels(), expected_labels)
 
-    def test_merge_recovery_and_reentry_never_append_twice(self):
+    def test_replace_recovery_and_reentry_never_rewrites_twice(self):
         _write_json(self.label_path, self.initial_document)
         store = self._store("after_label_replace_before_checkpoint")
         with self.assertRaises(InjectedCommitCrash):
@@ -904,7 +864,51 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
             repeated = self._commit(store)
         self.assertEqual(repeated.composition.action, "already_committed")
         replace.assert_not_called()
-        self.assertEqual(self._labels(), ["old", "new"])
+        self.assertEqual(self._labels(), ["new"])
+
+    def test_v2_checkpoint_response_loss_recovers_from_session_receipt(self):
+        _write_json(self.label_path, self.initial_document)
+        existing = resolve_existing_label(self.label_path)
+        authority_item = {
+            "revision": 0,
+            "staged_document_digest": existing.document_digest,
+            "staged_semantic_digest": existing.semantic_digest,
+        }
+        authority_store = SimpleNamespace(
+            read_item=mock.Mock(return_value=authority_item),
+            recover_commit=mock.Mock(
+                return_value=("CHECKPOINTED", {"revision": 2})
+            ),
+        )
+        sink = SimpleNamespace(
+            prepare=mock.Mock(return_value=("PREPARED", {"revision": 1})),
+            checkpoint=mock.Mock(side_effect=RuntimeError("response lost")),
+        )
+        store = self._store()
+
+        with self.assertRaisesRegex(RuntimeError, "response lost"):
+            self._commit(
+                store,
+                event_sink=sink,
+                annotation_item_store=authority_store,
+                model_fingerprint={"model_sha256": "a" * 64},
+            )
+
+        repeated = self._commit(
+            store,
+            event_sink=sink,
+            annotation_item_store=authority_store,
+            model_fingerprint={"model_sha256": "a" * 64},
+        )
+        self.assertEqual(repeated.composition.action, "already_committed")
+        authority_store.recover_commit.assert_called_once_with(
+            "image-a",
+            repeated.composition.document_digest,
+            repeated.composition.semantic_digest,
+        )
+        self.assertEqual(sink.prepare.call_count, 1)
+        self.assertEqual(sink.checkpoint.call_count, 1)
+        self.assertEqual(self._labels(), ["new"])
 
     def test_recovery_uses_only_document_digest_not_raw_formatting(self):
         _write_json(self.label_path, self.initial_document)
@@ -985,7 +989,7 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
                 image_height=6,
                 image_width=8,
                 prediction_outcome=self.outcome,
-                write_policy="FORCE_MERGE",
+                write_policy="FORCE_REPLACE",
                 allowed_root=directory,
             )
             results.append(result)
@@ -1015,7 +1019,7 @@ class CommitProtocolAndRecoveryTests(unittest.TestCase):
         self.assertEqual(
             store.read_item("image-a")["item_revision"], first_revision
         )
-        self.assertEqual(self._labels(), ["old", "new"])
+        self.assertEqual(self._labels(), ["new"])
 
 
 class AnnotationCommitEventSinkTests(unittest.TestCase):
@@ -1152,6 +1156,62 @@ class AnnotationCommitEventSinkTests(unittest.TestCase):
                 semantic_digest="alsem1:" + ("2" * 64),
                 created_at="2026-08-07T00:00:00Z",
             )
+
+
+class AnnotationCommitEventV2Tests(unittest.TestCase):
+    def _event(self, **changes):
+        values = {
+            "project_id": "project-α",
+            "session_id": "session-a",
+            "image_id": "图像-01",
+            "base_session_item_revision": 7,
+            "writer": "AUTOMATIC",
+            "pre_document_digest": "MISSING",
+            "pre_semantic_digest": "MISSING",
+            "intended_document_digest": "aldoc1:" + "1" * 64,
+            "intended_semantic_digest": "alsem1:" + "2" * 64,
+            "model_fingerprint": {
+                "adapter": "yolo",
+                "sha256": "3" * 64,
+            },
+            "created_at": "2026-08-11T00:00:00Z",
+        }
+        values.update(changes)
+        return build_annotation_commit_event_v2(**values)
+
+    def test_cross_repository_golden_event_id(self):
+        event = self._event()
+        self.assertEqual(
+            event["event_id"],
+            "6f9e428dc0d7a5ec3f3837dfd8f2acdba672f4f003fc821e6a12f0019a6ce932",
+        )
+        self.assertIs(validate_annotation_commit_event_v2(event), event)
+        self.assertNotIn("run_id", event)
+        self.assertNotIn("attempt_id", event)
+
+    def test_writer_matrix_and_credential_free_fingerprint(self):
+        for writer in ("MANUAL_SAVE", "AUTO_SAVE"):
+            with self.subTest(writer=writer):
+                event = self._event(writer=writer, model_fingerprint=None)
+                self.assertEqual(event["writer"], writer)
+        delete = self._event(
+            writer="DELETE_LABEL",
+            intended_document_digest="MISSING",
+            intended_semantic_digest="MISSING",
+            model_fingerprint=None,
+        )
+        self.assertEqual(delete["writer"], "DELETE_LABEL")
+        for changes in (
+            {"writer": "MANUAL_SAVE"},
+            {
+                "writer": "DELETE_LABEL",
+                "model_fingerprint": None,
+            },
+            {"model_fingerprint": {"api_token": "secret"}},
+        ):
+            with self.subTest(changes=changes):
+                with self.assertRaises(StoreConflictError):
+                    self._event(**changes)
 
 
 if __name__ == "__main__":

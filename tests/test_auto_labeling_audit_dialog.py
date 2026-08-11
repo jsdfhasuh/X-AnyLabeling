@@ -18,6 +18,7 @@ from anylabeling.views.labeling.utils.auto_labeling_i18n import (
 from anylabeling.views.labeling.widgets.auto_labeling_audit_dialog import (
     AuditInteractionGuard,
     AutoLabelingAuditDialog,
+    AutoLabelingAuditPanel,
     StagedAuditUiSession,
 )
 
@@ -246,6 +247,128 @@ class AutoLabelingAuditDialogTests(unittest.TestCase):
         finally:
             dialog.allow_close()
             dialog.close()
+
+    def test_embedded_panel_exposes_the_same_actions_without_modal_ui(self):
+        parent = QtWidgets.QWidget()
+        panel = AutoLabelingAuditPanel(parent)
+        callbacks = {
+            "previous_requested": mock.Mock(),
+            "next_requested": mock.Mock(),
+            "needs_fix_requested": mock.Mock(),
+            "save_approve_requested": mock.Mock(),
+            "approve_requested": mock.Mock(),
+            "finish_requested": mock.Mock(),
+        }
+        try:
+            self.assertIsInstance(panel, QtWidgets.QWidget)
+            self.assertNotIsInstance(panel, QtWidgets.QDialog)
+            for signal_name, callback in callbacks.items():
+                getattr(panel, signal_name).connect(callback)
+            for button in (
+                panel.previous_button,
+                panel.next_button,
+                panel.needs_fix_button,
+                panel.save_approve_button,
+                panel.approve_button,
+                panel.finish_button,
+            ):
+                button.click()
+            for callback in callbacks.values():
+                callback.assert_called_once_with()
+            panel.set_item(_item("image-a", 0), dirty=False)
+            panel.set_summary(
+                {
+                    "staged_approved": 0,
+                    "source_approved": 0,
+                    "needs_fix": 0,
+                    "pending": 1,
+                    "stale": 0,
+                }
+            )
+            self.assertIn("image-a", panel.identity_label.text())
+            self.assertIn("1", panel.counts_label.text())
+        finally:
+            panel.allow_close()
+            panel.close()
+            parent.close()
+
+    def test_sidebar_panel_lifecycle_and_pending_counts_share_one_entry(self):
+        host = QtWidgets.QWidget()
+        host.right_sidebar_tabs = QtWidgets.QTabWidget(host)
+        host.labels_page = QtWidgets.QWidget(host.right_sidebar_tabs)
+        host.audit_sidebar_page = QtWidgets.QWidget(host.right_sidebar_tabs)
+        host.right_sidebar_tabs.addTab(host.labels_page, "Labels")
+        host.right_sidebar_tabs.addTab(host.audit_sidebar_page, "Audit")
+        host.audit_sidebar_layout = QtWidgets.QVBoxLayout(
+            host.audit_sidebar_page
+        )
+        host.audit_empty_label = QtWidgets.QLabel(host.audit_sidebar_page)
+        host.audit_open_button = QtWidgets.QPushButton(host.audit_sidebar_page)
+        host.audit_sidebar_layout.addWidget(host.audit_empty_label)
+        host.audit_sidebar_layout.addWidget(host.audit_open_button)
+        host.auto_labeling_widget = SimpleNamespace(
+            set_pending_review_count=mock.Mock()
+        )
+        host._session_pending_review_count = 0
+        host._historical_pending_review_count = 0
+        host._refresh_pending_review_controls = lambda: (
+            LabelingWidget._refresh_pending_review_controls(host)
+        )
+        panel = AutoLabelingAuditPanel(host.audit_sidebar_page)
+        try:
+            LabelingWidget.show_auto_labeling_audit_panel(host, panel)
+            self.assertIs(
+                host.right_sidebar_tabs.currentWidget(),
+                host.audit_sidebar_page,
+            )
+            self.assertTrue(host.audit_empty_label.isHidden())
+            self.assertTrue(host.audit_open_button.isHidden())
+
+            LabelingWidget.set_auto_labeling_pending_review_count(
+                host, 2, scope="session"
+            )
+            LabelingWidget.set_auto_labeling_pending_review_count(
+                host, 3, scope="historical"
+            )
+            self.assertIn("5", host.audit_open_button.text())
+            host.auto_labeling_widget.set_pending_review_count.assert_called_with(
+                5
+            )
+
+            LabelingWidget.remove_auto_labeling_audit_panel(host, panel)
+            self.assertFalse(host.audit_empty_label.isHidden())
+            self.assertFalse(host.audit_open_button.isHidden())
+        finally:
+            panel.allow_close()
+            panel.close()
+            host.close()
+
+    def test_review_entry_prefers_current_session_then_historical_callback(
+        self,
+    ):
+        current_client = object()
+        callback = mock.Mock(return_value=True)
+        host = SimpleNamespace(
+            _auto_labeling_audit_session=None,
+            right_sidebar_tabs=mock.Mock(),
+            audit_sidebar_page=object(),
+            auto_labeling_host_context=SimpleNamespace(
+                audit_client=current_client,
+                request_historical_review=callback,
+            ),
+            _session_pending_review_count=1,
+            _historical_pending_review_count=4,
+            start_auto_labeling_review=mock.Mock(return_value=True),
+        )
+        self.assertTrue(LabelingWidget.open_auto_labeling_review(host))
+        host.start_auto_labeling_review.assert_called_once_with(current_client)
+        callback.assert_not_called()
+
+        host._session_pending_review_count = 0
+        host.start_auto_labeling_review.reset_mock()
+        self.assertTrue(LabelingWidget.open_auto_labeling_review(host))
+        callback.assert_called_once_with()
+        host.start_auto_labeling_review.assert_not_called()
 
     def test_guard_disables_identity_actions_and_restores_original_state(self):
         items = [_item("image-a", 0)]

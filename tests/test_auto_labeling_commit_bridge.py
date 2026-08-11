@@ -16,6 +16,7 @@ from anylabeling.views.labeling.utils.auto_labeling_commit_bridge import (
     AnnotationCommitBridgeV1,
 )
 from anylabeling.views.labeling.utils.auto_labeling_commit import (
+    atomic_write_label_document,
     resolve_existing_label,
 )
 from anylabeling.views.labeling.utils.auto_labeling_run_store import (
@@ -51,11 +52,61 @@ class _HostStore:
         return dict(self.item)
 
 
+class _ImageItemStore:
+    def __init__(self, label_path):
+        self.label_path = label_path
+
+    def read_item(self, image_id):
+        current = resolve_existing_label(self.label_path)
+        return {
+            "image_id": image_id,
+            "revision": 4,
+            "staged_document_digest": current.document_digest,
+            "staged_semantic_digest": current.semantic_digest,
+        }
+
+    def recover_commit(
+        self,
+        image_id,
+        current_document_digest,
+        current_semantic_digest,
+    ):
+        return "RETRY", self.read_item(image_id)
+
+
+class _StandaloneClient:
+    def __init__(self, record, store, sink):
+        self.record = record
+        self.store = store
+        self.sink = sink
+        self.integrity_refresh = mock.Mock()
+
+    def commit_binding(self, image_path):
+        if os.path.normcase(os.path.realpath(image_path)) != (
+            self.record.canonical_session_image_path
+        ):
+            return None
+        item = self.store.read_item("run-a", self.record.image_id)
+        return {
+            "project_id": "project-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "image_id": self.record.image_id,
+            "attempt_id": item.get("latest_attempt_id"),
+            "item_revision": item["item_revision"],
+            "label_path": self.record.canonical_session_label_path,
+            "source_image_digest": self.record.source_image_digest,
+            "sink": self.sink,
+        }
+
+
 class AnnotationCommitBridgeTests(unittest.TestCase):
     def test_bound_session_rejects_image_deletion(self):
         widget = SimpleNamespace(
             auto_labeling_audit_active=False,
-            auto_labeling_host_context=SimpleNamespace(active_run_id="run-a"),
+            auto_labeling_host_context=SimpleNamespace(
+                active_session_id="session-a"
+            ),
         )
         self.assertFalse(LabelingWidget.delete_image_file(widget))
 
@@ -67,7 +118,7 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
         Image.new("RGB", (8, 6), color=(20, 30, 40)).save(self.image_path)
         _write(self.label_path, _document())
         self.sink = SimpleNamespace(publish=mock.Mock(return_value="APPLIED"))
-        record = SimpleNamespace(
+        self.record = SimpleNamespace(
             image_id="image-a",
             canonical_session_image_path=os.path.normcase(
                 os.path.realpath(self.image_path)
@@ -77,20 +128,14 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
             ),
             source_image_digest="a" * 64,
         )
-        context = SimpleNamespace(
-            project_id="project-a",
-            active_session_id="session-a",
-            active_run_id="run-a",
-            image_records_by_path={
-                record.canonical_session_image_path: record
-            },
-            run_store=_HostStore(),
-            annotation_commit_sink=self.sink,
-            staged_audit_client=SimpleNamespace(integrity_refresh=mock.Mock()),
+        self.standalone_client = _StandaloneClient(
+            self.record,
+            _HostStore(),
+            self.sink,
         )
         self.widget = SimpleNamespace(
-            auto_labeling_host_context=context,
-            _standalone_auto_labeling_audit_client=None,
+            auto_labeling_host_context=None,
+            _standalone_auto_labeling_audit_client=self.standalone_client,
             _sequence_presentation_session=None,
             filename=str(self.image_path),
             auto_labeling_commit_blocked=False,
@@ -102,6 +147,76 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def _v2_bridge(self):
+        sink = mock.Mock()
+        sink.prepare.return_value = "PREPARED"
+        sink.checkpoint.return_value = "CHECKPOINTED"
+        context = SimpleNamespace(
+            project_id="project-a",
+            active_session_id="session-a",
+            image_records_by_path={
+                self.record.canonical_session_image_path: self.record
+            },
+            annotation_item_store=_ImageItemStore(self.label_path),
+            annotation_commit_sink=sink,
+        )
+        self.widget.auto_labeling_host_context = context
+        bridge = AnnotationCommitBridgeV1(self.widget)
+        bridge.record_loaded_label(self.label_path)
+        return bridge, sink
+
+    def test_v2_manual_auto_save_and_delete_use_prepare_then_checkpoint(self):
+        for writer in ("MANUAL_SAVE", "AUTO_SAVE"):
+            with self.subTest(writer=writer):
+                _write(self.label_path, _document())
+                bridge, sink = self._v2_bridge()
+                current = resolve_existing_label(self.label_path)
+                document = _document(f"saved by {writer}")
+                bridge.prepare_saved_label(
+                    writer,
+                    self.image_path,
+                    self.label_path,
+                    document,
+                    current,
+                )
+                atomic_write_label_document(
+                    self.label_path,
+                    document,
+                    pre_document_digest=current.document_digest,
+                    allowed_root=self.root,
+                )
+                self.assertEqual(
+                    bridge.publish_saved_label(
+                        writer,
+                        self.image_path,
+                        self.label_path,
+                    ),
+                    "CHECKPOINTED",
+                )
+                self.assertEqual(
+                    [call[0] for call in sink.method_calls],
+                    ["prepare", "checkpoint"],
+                )
+                event = sink.prepare.call_args.args[0]
+                self.assertEqual(event["event_schema_version"], 2)
+                self.assertEqual(event["writer"], writer)
+                self.assertNotIn("run_id", event)
+
+        _write(self.label_path, _document())
+        bridge, sink = self._v2_bridge()
+        self.assertEqual(
+            bridge.delete_label(self.image_path, self.label_path),
+            "CHECKPOINTED",
+        )
+        self.assertFalse(self.label_path.exists())
+        self.assertEqual(
+            [call[0] for call in sink.method_calls],
+            ["prepare", "checkpoint"],
+        )
+        self.assertEqual(
+            sink.prepare.call_args.args[0]["writer"], "DELETE_LABEL"
+        )
 
     def _configure_save_surface(self, *, auto_save=False):
         save_action = SimpleNamespace(setEnabled=mock.Mock())
@@ -256,9 +371,7 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
         self.assertIsNone(self.bridge.pending_commit)
         self.assertFalse(self.widget.auto_labeling_commit_blocked)
         self.assertIsNone(self.widget.auto_labeling_commit_error)
-        (
-            self.widget.auto_labeling_host_context.staged_audit_client.integrity_refresh.assert_not_called()
-        )
+        self.standalone_client.integrity_refresh.assert_not_called()
 
     def test_response_loss_replay_is_exactly_once_in_commit_store(self):
         store = InMemoryCommitStoreV1()
@@ -276,9 +389,7 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
                     raise RuntimeError("response lost after commit")
                 return result
 
-        self.widget.auto_labeling_host_context.annotation_commit_sink = (
-            ResponseLossSink()
-        )
+        self.standalone_client.sink = ResponseLossSink()
         _write(self.label_path, _document("saved to store"))
         with self.assertRaises(AnnotationCommitBridgeError):
             self.bridge.publish_saved_label(

@@ -8,7 +8,6 @@ from anylabeling.services.auto_labeling.prediction_runner import (
     PredictionRunner,
 )
 from anylabeling.views.labeling.utils.auto_labeling_host import (
-    resolve_resume_sequence_spec_v1,
     validate_auto_labeling_host_context,
 )
 from anylabeling.views.labeling.utils.auto_labeling_i18n import (
@@ -59,22 +58,13 @@ _DEFAULT_SEQUENCE_SETTINGS = {
     "delay_seconds": 2.0,
     "range": "CURRENT_TO_END",
     "filter": "ALL",
-    "write_policy": "INHERIT_MODEL_POLICY",
+    "write_policy": "SKIP_EXISTING",
 }
 
 
 def continuous_start_failure_text_v1(exc):
     code = str(getattr(exc, "code", "sequence_run_start_failed"))
     detail = str(exc)
-    if code == "active_run_exists":
-        activation_detail = str(getattr(exc, "detail", "") or "")
-        if not activation_detail and detail.startswith(f"{code}:"):
-            activation_detail = detail[len(code) + 1 :]
-        run_id = activation_detail.split(":", 1)[0].strip() or "unknown"
-        return auto_labeling_text_v1(
-            "active_run_exists_guidance",
-            run_id=run_id,
-        )
     return f"{code}\n{detail}" if detail != code else code
 
 
@@ -92,15 +82,6 @@ def continuous_auto_labeling_settings_v1(config):
     for field, allowed in (
         ("range", {"ALL_IMAGES", "CURRENT_TO_END"}),
         ("filter", {"ALL", "ONLY_WITHOUT_VALID_ANNOTATION"}),
-        (
-            "write_policy",
-            {
-                "INHERIT_MODEL_POLICY",
-                "SKIP_EXISTING",
-                "FORCE_REPLACE",
-                "FORCE_MERGE",
-            },
-        ),
     ):
         if raw.get(field) in allowed:
             result[field] = raw[field]
@@ -151,6 +132,7 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
         values = dict(_DEFAULT_SEQUENCE_SETTINGS)
         if type(initial_values) is dict:
             values.update(initial_values)
+        values["write_policy"] = "SKIP_EXISTING"
         if not current_anchor_available:
             model = self.range_combo.model()
             model.item(1).setEnabled(False)
@@ -173,13 +155,8 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
 
         self.write_policy_combo = QtWidgets.QComboBox()
         for text, value in (
-            (
-                auto_labeling_text_v1("inherit_model_policy"),
-                "INHERIT_MODEL_POLICY",
-            ),
             (auto_labeling_text_v1("skip_existing"), "SKIP_EXISTING"),
             (auto_labeling_text_v1("force_replace"), "FORCE_REPLACE"),
-            (auto_labeling_text_v1("force_merge"), "FORCE_MERGE"),
         ):
             self.write_policy_combo.addItem(text, value)
         self.write_policy_combo.setCurrentIndex(
@@ -691,14 +668,6 @@ class FastRunUiSession(QtCore.QObject):
             context = validate_auto_labeling_host_context(context)
             if not context.images_ready:
                 raise FastControllerError("images_not_ready")
-            if context.active_run_id is not None:
-                return self._prepare_resume_options(
-                    context,
-                    image_paths,
-                    capability,
-                    fingerprint,
-                    parameters,
-                )
             workset_source = "SESSION_WORKSET"
         else:
             if not image_paths:
@@ -733,6 +702,22 @@ class FastRunUiSession(QtCore.QObject):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return None
         selected = dialog.selected_values()
+        if (
+            selected["write_policy"] == "FORCE_REPLACE"
+            and preview["existing_annotation"] > 0
+        ):
+            answer = QtWidgets.QMessageBox.warning(
+                self.labeling_widget,
+                auto_labeling_text_v1("replace_confirmation_title"),
+                auto_labeling_text_v1(
+                    "replace_confirmation",
+                    count=preview["existing_annotation"],
+                ),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if answer != QtWidgets.QMessageBox.Yes:
+                return None
         delay = validate_sequence_delay_seconds_v1(selected["delay_seconds"])
         if delay == 0.0 and not capability.supports_fast_sequence:
             raise FastControllerError("fast_sequence_not_supported")
@@ -754,57 +739,8 @@ class FastRunUiSession(QtCore.QObject):
             "delay_seconds": delay,
             "range": selected["range"],
             "filter": selected["filter"],
-            "write_policy": selected["write_policy"],
         }
         return options, image_paths
-
-    def _prepare_resume_options(
-        self,
-        context,
-        image_paths,
-        capability,
-        fingerprint,
-        parameters,
-    ):
-        try:
-            spec = resolve_resume_sequence_spec_v1(context)
-        except Exception as exc:
-            raise FastControllerError(str(exc)) from exc
-        config = spec["config"]
-        stored_fingerprint = config["model_fingerprint"]
-        if stored_fingerprint.get("resume_supported") is not True:
-            raise FastControllerError("resume_model_not_supported")
-        if fingerprint != stored_fingerprint:
-            raise FastControllerError("resume_model_fingerprint_mismatch")
-        if parameters != config["parameter_snapshot"]:
-            raise FastControllerError("resume_parameter_snapshot_mismatch")
-        delay = validate_sequence_delay_seconds_v1(config["delay_seconds"])
-        if delay == 0.0 and not capability.supports_fast_sequence:
-            raise FastControllerError("fast_sequence_not_supported")
-        if delay > 0.0 and not capability.supports_visible_sequence:
-            raise FastControllerError("visible_sequence_not_supported")
-        records = sorted(
-            context.image_records_by_path.values(),
-            key=lambda record: _record_value(record, "manifest_sequence"),
-        )
-        anchor_id = None
-        if config["range"] == "CURRENT_TO_END":
-            if not records:
-                raise FastControllerError("resume_workset_empty")
-            anchor_id = _record_value(records[0], "image_id")
-        return (
-            SequenceRunOptionsV1(
-                delay_seconds=delay,
-                range=config["range"],
-                filter=config["filter"],
-                write_policy=config["write_policy"],
-                current_anchor_image_id=anchor_id,
-                workset_source=config["workset_source"],
-                model_fingerprint=stored_fingerprint,
-                parameter_snapshot=config["parameter_snapshot"],
-            ),
-            image_paths,
-        )
 
     def _current_anchor_id(self, context):
         filename = getattr(self.labeling_widget, "filename", None)
@@ -1049,6 +985,13 @@ class FastRunUiSession(QtCore.QObject):
             self.guard.restore(self.controller.modified_image_ids)
         self._reset_entry_action()
         self._prepare_audit_client(summary)
+        pending_setter = getattr(
+            self.labeling_widget,
+            "set_auto_labeling_pending_review_count",
+            None,
+        )
+        if callable(pending_setter):
+            pending_setter(summary.get("pending_review", 0), scope="session")
         self.progress.finish_run(summary)
         self.auto_widget.refresh_continuous_run_availability()
         self._connect_thread_cleanup()

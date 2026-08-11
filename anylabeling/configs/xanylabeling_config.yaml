@@ -191,7 +191,7 @@ continuous_auto_labeling:
   delay_seconds: 2.0
   range: CURRENT_TO_END
   filter: ALL
-  write_policy: INHERIT_MODEL_POLICY
+  write_policy: SKIP_EXISTING
 
 custom_models: []
 remote_server_settings:

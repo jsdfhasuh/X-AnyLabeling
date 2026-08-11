@@ -1,6 +1,9 @@
 """Phase 1 commit protocols and in-memory test/reference adapters."""
 
 import copy
+import hashlib
+import json
+import re
 import threading
 from datetime import datetime, timezone
 from typing import Protocol, runtime_checkable
@@ -8,6 +11,8 @@ from typing import Protocol, runtime_checkable
 from .auto_labeling_contracts import (
     annotation_commit_event_id_v1,
     validate_annotation_commit_event_v1,
+    validate_document_digest_v1,
+    validate_semantic_digest_v1,
 )
 
 
@@ -88,8 +93,165 @@ class AnnotationCommitSinkProtocolV1(Protocol):
         pass
 
 
+@runtime_checkable
+class AnnotationCommitSinkProtocolV2(Protocol):
+    """Image transaction sink with no persistent task or attempt identity."""
+
+    def prepare(self, event, *, label_path=None):
+        pass
+
+    def checkpoint(self, event, *, label_path=None):
+        pass
+
+
 def _utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+_COMMIT_EVENT_V2_FIELDS = {
+    "event_schema_version",
+    "event_id",
+    "project_id",
+    "session_id",
+    "image_id",
+    "base_session_item_revision",
+    "writer",
+    "pre_document_digest",
+    "pre_semantic_digest",
+    "intended_document_digest",
+    "intended_semantic_digest",
+    "model_fingerprint",
+    "created_at",
+}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def annotation_commit_event_id_v2(event):
+    payload = [
+        event.get("project_id"),
+        event.get("session_id"),
+        event.get("image_id"),
+        event.get("base_session_item_revision"),
+        event.get("writer"),
+        event.get("pre_document_digest"),
+        event.get("pre_semantic_digest"),
+        event.get("intended_document_digest"),
+        event.get("intended_semantic_digest"),
+        event.get("model_fingerprint"),
+    ]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(b"ALCOMMITEVENT2\0" + encoded).hexdigest()
+
+
+def validate_annotation_commit_event_v2(event):
+    if type(event) is not dict or set(event) != _COMMIT_EVENT_V2_FIELDS:
+        raise StoreConflictError("invalid_annotation_commit_event_v2_fields")
+    if event["event_schema_version"] != 2:
+        raise StoreConflictError("unsupported_annotation_commit_event_schema")
+    if (
+        type(event["event_id"]) is not str
+        or _SHA256_RE.fullmatch(event["event_id"]) is None
+    ):
+        raise StoreConflictError("invalid_annotation_commit_event_id")
+    for field in ("project_id", "session_id", "image_id", "created_at"):
+        if type(event[field]) is not str or not event[field]:
+            raise StoreConflictError(f"invalid_annotation_commit_{field}")
+    revision = event["base_session_item_revision"]
+    if type(revision) is not int or revision < 0:
+        raise StoreConflictError("invalid_annotation_commit_revision")
+    writer = event["writer"]
+    if writer not in {"AUTOMATIC", "MANUAL_SAVE", "AUTO_SAVE", "DELETE_LABEL"}:
+        raise StoreConflictError("invalid_annotation_commit_writer")
+    validate_document_digest_v1(
+        event["pre_document_digest"], allow_missing=True
+    )
+    validate_semantic_digest_v1(
+        event["pre_semantic_digest"], allow_missing=True
+    )
+    validate_document_digest_v1(
+        event["intended_document_digest"], allow_missing=True
+    )
+    validate_semantic_digest_v1(
+        event["intended_semantic_digest"], allow_missing=True
+    )
+    intended_missing = (
+        event["intended_document_digest"] == "MISSING"
+        and event["intended_semantic_digest"] == "MISSING"
+    )
+    intended_present = (
+        event["intended_document_digest"] != "MISSING"
+        and event["intended_semantic_digest"] != "MISSING"
+    )
+    fingerprint = event["model_fingerprint"]
+    try:
+        json.dumps(fingerprint, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise StoreConflictError(
+            "invalid_annotation_model_fingerprint"
+        ) from exc
+    if fingerprint is not None:
+        from .auto_labeling_host import (
+            HostContextValidationError,
+            validate_model_fingerprint_payload,
+        )
+
+        try:
+            validate_model_fingerprint_payload(fingerprint)
+        except HostContextValidationError as exc:
+            raise StoreConflictError(
+                "invalid_annotation_model_fingerprint"
+            ) from exc
+    if writer == "DELETE_LABEL":
+        valid = intended_missing and fingerprint is None
+    elif writer == "AUTOMATIC":
+        valid = intended_present and type(fingerprint) is dict
+    else:
+        valid = intended_present and fingerprint is None
+    if not valid:
+        raise StoreConflictError("annotation_commit_writer_invariant")
+    if event["event_id"] != annotation_commit_event_id_v2(event):
+        raise StoreConflictError("annotation_commit_event_id_mismatch")
+    return event
+
+
+def build_annotation_commit_event_v2(
+    *,
+    project_id,
+    session_id,
+    image_id,
+    base_session_item_revision,
+    writer,
+    pre_document_digest,
+    pre_semantic_digest,
+    intended_document_digest,
+    intended_semantic_digest,
+    model_fingerprint=None,
+    created_at=None,
+):
+    event = {
+        "event_schema_version": 2,
+        "event_id": "0" * 64,
+        "project_id": project_id,
+        "session_id": session_id,
+        "image_id": image_id,
+        "base_session_item_revision": base_session_item_revision,
+        "writer": writer,
+        "pre_document_digest": pre_document_digest,
+        "pre_semantic_digest": pre_semantic_digest,
+        "intended_document_digest": intended_document_digest,
+        "intended_semantic_digest": intended_semantic_digest,
+        "model_fingerprint": copy.deepcopy(model_fingerprint),
+        "created_at": created_at or _utc_now(),
+    }
+    event["event_id"] = annotation_commit_event_id_v2(event)
+    validate_annotation_commit_event_v2(event)
+    return event
 
 
 def build_annotation_commit_event_v1(

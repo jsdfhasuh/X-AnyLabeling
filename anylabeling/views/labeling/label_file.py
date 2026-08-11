@@ -146,6 +146,7 @@ class LabelFile:
         other_data=None,
         flags=None,
         pre_document_digest=None,
+        before_write=None,
     ):
         if image_data is not None:
             image_data = base64.b64encode(image_data).decode("utf-8")
@@ -191,6 +192,8 @@ class LabelFile:
             current = resolve_existing_label(filename)
             if pre_document_digest is None:
                 pre_document_digest = current.document_digest
+            if callable(before_write):
+                before_write(copy.deepcopy(data), current)
             result = atomic_write_label_document(
                 filename,
                 data,

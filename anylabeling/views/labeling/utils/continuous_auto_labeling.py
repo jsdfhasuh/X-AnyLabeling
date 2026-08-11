@@ -21,15 +21,11 @@ from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.utils.auto_labeling_commit import (
     LabelConflictError,
     commit_label_for_image_v1,
-    recover_image_commit_v1,
     resolve_existing_label,
     validate_output_paths_v1,
 )
 from anylabeling.views.labeling.utils.auto_labeling_contracts import (
     validate_document_digest_v1,
-)
-from anylabeling.views.labeling.utils.auto_labeling_host import (
-    resolve_resume_sequence_spec_v1,
 )
 from anylabeling.views.labeling.utils.auto_labeling_run_store import (
     InMemoryCommitStoreV1,
@@ -425,6 +421,99 @@ def create_standalone_sequence_activation_v1(
     )
 
 
+def create_host_sequence_activation_v1(context, options):
+    """Build a fresh process-local sequence from immutable Session records."""
+
+    from .auto_labeling_host import validate_auto_labeling_host_context
+
+    context = validate_auto_labeling_host_context(context)
+    if options.workset_source != "SESSION_WORKSET":
+        raise FastControllerError("host_workset_source_invalid")
+    records = sorted(
+        context.image_records_by_path.values(),
+        key=lambda value: _record_value(value, "manifest_sequence"),
+    )
+    if not records:
+        raise FastControllerError("host_workset_empty")
+    records_by_id = {
+        _record_value(record, "image_id"): record for record in records
+    }
+    if len(records_by_id) != len(records):
+        raise FastControllerError("host_workset_duplicate_image_id")
+    anchor_sequence = 0
+    if options.range == "CURRENT_TO_END":
+        anchor_records = [
+            record
+            for record in records
+            if _record_value(record, "image_id")
+            == options.current_anchor_image_id
+        ]
+        if len(anchor_records) != 1:
+            raise FastControllerError("current_anchor_image_id_not_found")
+        anchor_sequence = _record_value(anchor_records[0], "manifest_sequence")
+    run_id = str(uuid.uuid4())
+    now = _utc_now()
+    items = []
+    for record in records:
+        image_id = _record_value(record, "image_id")
+        sequence = _record_value(record, "manifest_sequence")
+        item = _new_fast_item(run_id, image_id, sequence, now)
+        if sequence < anchor_sequence:
+            _mark_standalone_skip(item, "outside_selected_range")
+        else:
+            existing = resolve_existing_label(
+                _record_value(record, "canonical_session_label_path")
+            )
+            if existing.presence == "INVALID":
+                _mark_standalone_conflict(item, "invalid_existing_label")
+            elif existing.presence in {"VALID_EMPTY", "VALID_NONEMPTY"} and (
+                options.filter == "ONLY_WITHOUT_VALID_ANNOTATION"
+                or options.write_policy == "SKIP_EXISTING"
+            ):
+                _mark_standalone_skip(item, "existing_annotation")
+        items.append(item)
+    queue = {
+        "run_id": run_id,
+        "entries": [
+            {
+                "sequence": _record_value(record, "manifest_sequence"),
+                "image_id": _record_value(record, "image_id"),
+            }
+            for record in records
+        ],
+    }
+    state = {
+        "run_id": run_id,
+        "revision": 0,
+        "processing_status": "PREPARED",
+        "review_progress": "NOT_STARTED",
+        "phase": "IDLE",
+        "control_intent": "NONE",
+        "cursor_sequence": 0,
+        "counts": {},
+        "last_error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    config = {
+        "run_id": run_id,
+        "project_id": context.project_id,
+        "workset_source": "SESSION_WORKSET",
+        "delay_seconds": options.delay_seconds,
+        "range": options.range,
+        "filter": options.filter,
+        "write_policy": options.write_policy,
+        "model_fingerprint": thaw_json(options.model_fingerprint),
+        "parameter_snapshot": thaw_json(options.parameter_snapshot),
+    }
+    return _StandaloneActivation(
+        run_id=run_id,
+        run_store=InMemoryFastRunStoreV1(config, queue, state, items),
+        commit_store=InMemoryCommitStoreV1(),
+        records_by_id=records_by_id,
+    )
+
+
 def create_standalone_fast_activation_v1(
     image_paths,
     options,
@@ -782,6 +871,7 @@ class ContinuousAutoLabelingController(QtCore.QObject):
         self.run_store = None
         self.commit_store = None
         self.event_sink = None
+        self.annotation_item_store = None
         self.records_by_id = {}
         self.queue_entries = []
         self.queue_position = 0
@@ -800,7 +890,6 @@ class ContinuousAutoLabelingController(QtCore.QObject):
         self._safe_generation = None
         self._live_summary = None
         self._item_contributions = {}
-        self._resume_spec = None
         self.current_presentation_image_id = None
         self.current_presentation_epoch = 0
         self.presentation_epoch = 0
@@ -909,60 +998,18 @@ class ContinuousAutoLabelingController(QtCore.QObject):
 
         if not bool(getattr(self.host_context, "images_ready", False)):
             raise FastControllerError("images_not_ready")
-        active_run_id = getattr(self.host_context, "active_run_id", None)
-        if active_run_id is not None:
-            self._resume_spec = resolve_resume_sequence_spec_v1(
-                self.host_context
-            )
-            activate = getattr(self.host_context, "resume_sequence_run", None)
-            run_id = active_run_id
-            session_attempt_id = self._resume_spec["binding"]["attempt_id"]
-        else:
-            activate = getattr(
-                self.host_context, "activate_sequence_run", None
-            )
-            if not callable(activate) and self.execution_mode == "FAST":
-                activate = getattr(
-                    self.host_context, "activate_fast_run", None
-                )
-            run_id = str(uuid.uuid4())
-            session_attempt_id = str(uuid.uuid4())
-        if not callable(activate):
-            raise FastControllerError("host_activation_service_unavailable")
-        request = self.options.activation_request(
-            run_id=run_id,
-            session_attempt_id=session_attempt_id,
-            created_by_app_version=self.created_by_app_version,
+        activation = create_host_sequence_activation_v1(
+            self.host_context,
+            self.options,
         )
-        activation = activate(request)
-        bound_context = activation.context
-        self.host_context = bound_context
         self.run_id = activation.run_id
-        self.run_store = bound_context.run_store
+        self.run_store = activation.run_store
         self.commit_store = activation.commit_store
-        self.event_sink = activation.annotation_commit_sink
-        self.records_by_id = {
-            _record_value(record, "image_id"): record
-            for record in bound_context.image_records_by_path.values()
-        }
-        if callable(self.context_replacer):
-            self.context_replacer(bound_context)
-        if self._resume_spec is not None:
-            self._recover_resumed_items()
+        self.event_sink = self.host_context.annotation_commit_sink
+        self.annotation_item_store = self.host_context.annotation_item_store
+        self.records_by_id = activation.records_by_id
         self._load_queue()
         self._activate_presenter()
-
-    def _recover_resumed_items(self):
-        for record in self.records_by_id.values():
-            image_id = _record_value(record, "image_id")
-            label_path = _record_value(record, "canonical_session_label_path")
-            result = recover_image_commit_v1(
-                store=self.commit_store,
-                image_id=image_id,
-                label_path=label_path,
-            )
-            if result.action == "CONFLICT":
-                continue
 
     def _activate_presenter(self):
         if self.execution_mode != "VISIBLE":
@@ -1020,28 +1067,12 @@ class ContinuousAutoLabelingController(QtCore.QObject):
 
     def _set_run_state(self, **changes):
         state = self.run_store.read_state(self.run_id)
-        update_bound = getattr(
-            self.host_context,
-            "update_active_run_state",
-            None,
-        )
-        if callable(update_bound):
-            return update_bound(state["revision"], changes)
         return self.run_store.update_state(
             self.run_id, state["revision"], changes
         )
 
     def _update_item(self, image_id, changes):
         item = self.run_store.read_item(self.run_id, image_id)
-        update_bound = getattr(
-            self.host_context,
-            "update_active_run_item",
-            None,
-        )
-        if callable(update_bound):
-            return self._track_item(
-                update_bound(image_id, item["item_revision"], changes)
-            )
         return self._track_item(
             self.run_store.update_item(
                 self.run_id, image_id, item["item_revision"], changes
@@ -1363,6 +1394,8 @@ class ContinuousAutoLabelingController(QtCore.QObject):
                 ),
                 run_id=self.run_id if self.host_context is not None else None,
                 source_image_digest=payload.source_image_digest,
+                annotation_item_store=self.annotation_item_store,
+                model_fingerprint=thaw_json(self.options.model_fingerprint),
             )
             if isinstance(self.commit_store, InMemoryCommitStoreV1):
                 self._sync_standalone_commit(

@@ -107,6 +107,17 @@ class AutoLabelingWidget(QWidget):
             self.run_continuous_auto_labeling
         )
         self.model_selection.insertWidget(1, self.button_continuous_run)
+        self.button_pending_review = QPushButton(self)
+        self.button_pending_review.setIcon(
+            self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
+        )
+        self.button_pending_review.setStyleSheet(get_normal_button_style())
+        self.button_pending_review.clicked.connect(self.open_pending_review)
+        run_index = self.model_selection.indexOf(self.button_run)
+        self.model_selection.insertWidget(
+            run_index + 1, self.button_pending_review
+        )
+        self.set_pending_review_count(0)
 
         self.skip_auto_prediction = False
         self.model_manager = ModelManager()
@@ -385,10 +396,19 @@ class AutoLabelingWidget(QWidget):
         refresh = getattr(self, "refresh_continuous_run_availability", None)
         if callable(refresh):
             refresh()
+        pending_count = int(
+            getattr(context, "historical_pending_review_count", 0) or 0
+        )
+        set_pending = getattr(self, "set_pending_review_count", None)
+        if callable(set_pending):
+            set_pending(pending_count)
         return self.auto_labeling_host_context
 
     def clear_auto_labeling_host_context(self):
         self.auto_labeling_host_context = None
+        set_pending = getattr(self, "set_pending_review_count", None)
+        if callable(set_pending):
+            set_pending(0)
         refresh = getattr(self, "refresh_continuous_run_availability", None)
         if callable(refresh):
             refresh()
@@ -421,6 +441,25 @@ class AutoLabelingWidget(QWidget):
             self.button_continuous_run.setToolTip(
                 auto_labeling_text_v1("fast_tooltip")
             )
+        pending = int(getattr(self, "_pending_review_count", 0) or 0)
+        self.button_pending_review.setEnabled(pending > 0 and not active)
+
+    def set_pending_review_count(self, count):
+        self._pending_review_count = max(0, int(count or 0))
+        self.button_pending_review.setText(
+            auto_labeling_text_v1(
+                "pending_review_count",
+                count=self._pending_review_count,
+            )
+        )
+        active = self._fast_run_session is not None
+        self.button_pending_review.setEnabled(
+            self._pending_review_count > 0 and not active
+        )
+
+    def open_pending_review(self):
+        opener = getattr(self.parent, "open_auto_labeling_review", None)
+        return bool(callable(opener) and opener())
 
     def run_continuous_auto_labeling(self):
         opener = getattr(self, "open_continuous_auto_labeling", None)

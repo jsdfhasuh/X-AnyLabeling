@@ -17,10 +17,8 @@ FAST_RANGES_V1 = frozenset({"ALL_IMAGES", "CURRENT_TO_END"})
 FAST_FILTERS_V1 = frozenset({"ALL", "ONLY_WITHOUT_VALID_ANNOTATION"})
 FAST_WRITE_POLICIES_V1 = frozenset(
     {
-        "INHERIT_MODEL_POLICY",
         "SKIP_EXISTING",
         "FORCE_REPLACE",
-        "FORCE_MERGE",
     }
 )
 FAST_WORKSET_SOURCES_V1 = frozenset(
@@ -237,27 +235,6 @@ class SequenceRunOptionsV1:
     @property
     def execution_mode(self):
         return "FAST" if self.delay_seconds == 0.0 else "VISIBLE"
-
-    def activation_request(
-        self,
-        *,
-        run_id,
-        session_attempt_id,
-        created_by_app_version,
-    ):
-        return {
-            "run_id": run_id,
-            "session_attempt_id": session_attempt_id,
-            "range": self.range,
-            "filter": self.filter,
-            "write_policy": self.write_policy,
-            "current_anchor_image_id": self.current_anchor_image_id,
-            "workset_source": self.workset_source,
-            "model_fingerprint": thaw_json(self.model_fingerprint),
-            "parameter_snapshot": thaw_json(self.parameter_snapshot),
-            "created_by_app_version": created_by_app_version,
-            "delay_seconds": self.delay_seconds,
-        }
 
 
 @dataclass(frozen=True)

@@ -6670,10 +6670,10 @@ Original images backed up to:
     <message><source>All</source><translation>全部</translation></message>
     <message><source>Only images without a valid annotation</source><translation>仅无有效标注的图片</translation></message>
     <message><source>Filter</source><translation>筛选</translation></message>
-    <message><source>Inherit model policy</source><translation>继承模型策略</translation></message>
     <message><source>Skip existing annotations</source><translation>跳过已有标注</translation></message>
     <message><source>Force replace</source><translation>强制替换</translation></message>
-    <message><source>Force merge</source><translation>强制合并</translation></message>
+    <message><source>Confirm replacement</source><translation>确认覆盖</translation></message>
+    <message><source>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</source><translation>Replace 可能覆盖当前范围内 {count} 个有效的已有标注。本次选择仅对当前操作生效。是否继续？</translation></message>
     <message><source>Write policy</source><translation>写入策略</translation></message>
     <message><source> s</source><translation> 秒</translation></message>
     <message><source>Dwell time</source><translation>停留时间</translation></message>
@@ -6705,6 +6705,11 @@ Original images backed up to:
     <message><source>Explicit error skips</source><translation>明确跳过的错误</translation></message>
     <message><source>Conflicts</source><translation>冲突</translation></message>
     <message><source>Pending review</source><translation>待审计</translation></message>
+    <message><source>Pending review {count}</source><translation>待审核 {count}</translation></message>
+    <message><source>Labels</source><translation>标签</translation></message>
+    <message><source>Auto labeling</source><translation>自动标注</translation></message>
+    <message><source>Review ({count})</source><translation>审核 ({count})</translation></message>
+    <message><source>No pending image in this session.</source><translation>当前 Session 没有待审核图片。</translation></message>
     <message><source>Remaining</source><translation>剩余</translation></message>
     <message><source>Processing status</source><translation>处理状态</translation></message>
     <message><source>Completed with errors</source><translation>完成但存在错误</translation></message>
@@ -6735,7 +6740,6 @@ Original images backed up to:
     <message><source>Stop continuous auto-labeling</source><translation>停止连续自动标注</translation></message>
     <message><source>Cannot continue continuous auto-labeling</source><translation>无法继续连续自动标注</translation></message>
     <message><source>Cannot start continuous auto-labeling</source><translation>无法开始连续自动标注</translation></message>
-    <message><source>An unfinished continuous auto-labeling run already exists (run {run_id}). Close this labeling window, then choose &quot;Process remaining auto-labeling&quot; from the project labeling menu. Saved results from the existing run are preserved.</source><translation>已有未完成的连续自动标注任务（Run {run_id}）。请关闭当前标注窗口，然后在项目的标注菜单中选择“处理剩余自动标注”。已有任务中已保存的结果会被保留。</translation></message>
     <message><source>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</source><translation>快速模式使用 0.0 秒延迟，且不会逐图切换主画布。</translation></message>
     <message><source>Continuous auto-labeling is already running.</source><translation>连续自动标注已在运行。</translation></message>
     <message><source>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</source><translation>旧版批处理：此模型不支持快速或可视连续自动标注。旧版批处理不会创建统一审计队列。</translation></message>
@@ -6752,6 +6756,8 @@ Original images backed up to:
     <message><source>staged={staged}  |  source={source}  |  target_count={target_count}  |  zero_target={zero_target}</source><translation>Session={staged}  |  源标签={source}  |  目标数={target_count}  |  零目标={zero_target}</translation></message>
     <message><source>Session approved {staged_approved}  |  source approved {source_approved}  |  needs fix {needs_fix}  |  pending {pending}  |  stale {stale}</source><translation>Session 已通过 {staged_approved}  |  源标签已通过 {source_approved}  |  需要修正 {needs_fix}  |  待审计 {pending}  |  已失效 {stale}</translation></message>
     <message><source>Audit action failed</source><translation>审计操作失败</translation></message>
+    <message><source>Unsaved annotation</source><translation>标注尚未保存</translation></message>
+    <message><source>Save or discard the current changes before switching review images.</source><translation>切换审核图片前，请保存或放弃当前更改。</translation></message>
     <message><source>Not applicable</source><translation>不适用</translation></message>
     <message><source>Pending</source><translation>待处理</translation></message>
     <message><source>Staged approved</source><translation>Session 已通过</translation></message>

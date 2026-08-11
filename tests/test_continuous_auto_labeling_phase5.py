@@ -290,7 +290,7 @@ class SequenceOptionsAndDialogTests(unittest.TestCase):
                 "delay_seconds": 2.0,
                 "range": "CURRENT_TO_END",
                 "filter": "ALL",
-                "write_policy": "INHERIT_MODEL_POLICY",
+                "write_policy": "SKIP_EXISTING",
             },
         )
         settings = continuous_auto_labeling_settings_v1(
@@ -1254,9 +1254,9 @@ class PresentationAndDifferentialTests(unittest.TestCase):
         timer = _ManualPresentationTimer() if visible else None
         clock = _MonotonicClock() if visible else None
         options = (
-            _sequence_options(2.0, write_policy="FORCE_MERGE")
+            _sequence_options(2.0, write_policy="FORCE_REPLACE")
             if visible
-            else _options(write_policy="FORCE_MERGE")
+            else _options(write_policy="FORCE_REPLACE")
         )
         controller_class = (
             ContinuousAutoLabelingController

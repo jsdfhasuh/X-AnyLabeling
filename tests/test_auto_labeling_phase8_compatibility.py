@@ -159,18 +159,19 @@ class Phase8CapabilityMatrixTests(unittest.TestCase):
                 opener.assert_called_once_with()
                 legacy.assert_not_called()
 
-    def test_bound_resume_run_keeps_continuous_entry_available(self):
+    def test_ready_session_keeps_continuous_entry_available(self):
         button = mock.Mock()
         widget = SimpleNamespace(
             model_manager=SimpleNamespace(
                 loaded_model_config={"type": "yolov8", "model": object()}
             ),
             auto_labeling_host_context=SimpleNamespace(
-                active_run_id="run-resume",
                 images_ready=True,
             ),
             _fast_run_session=None,
+            _pending_review_count=0,
             button_continuous_run=button,
+            button_pending_review=mock.Mock(),
         )
 
         AutoLabelingWidget.refresh_continuous_run_availability(widget)
@@ -190,7 +191,7 @@ class Phase8ConfigTranslationAndDocsTests(unittest.TestCase):
                 "delay_seconds": 2.0,
                 "range": "CURRENT_TO_END",
                 "filter": "ALL",
-                "write_policy": "INHERIT_MODEL_POLICY",
+                "write_policy": "SKIP_EXISTING",
             },
         )
 

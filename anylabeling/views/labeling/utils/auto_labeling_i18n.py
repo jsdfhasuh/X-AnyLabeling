@@ -19,10 +19,14 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
             "Only images without a valid annotation"
         ),
         "filter": "Filter",
-        "inherit_model_policy": "Inherit model policy",
         "skip_existing": "Skip existing annotations",
         "force_replace": "Force replace",
-        "force_merge": "Force merge",
+        "replace_confirmation_title": "Confirm replacement",
+        "replace_confirmation": (
+            "Replace may overwrite {count} valid existing annotation(s) "
+            "in this scope. This choice is used only for this operation. "
+            "Continue?"
+        ),
         "write_policy": "Write policy",
         "seconds_suffix": " s",
         "dwell_time": "Dwell time",
@@ -59,6 +63,11 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
         "explicit_error_skips": "Explicit error skips",
         "conflicts": "Conflicts",
         "pending_review": "Pending review",
+        "pending_review_count": "Pending review {count}",
+        "labels_tab": "Labels",
+        "auto_labeling_tab": "Auto labeling",
+        "audit_tab": "Review ({count})",
+        "audit_empty": "No pending image in this session.",
         "remaining": "Remaining",
         "processing_status": "Processing status",
         "completed_with_errors": "Completed with errors",
@@ -94,12 +103,6 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
         "stop_continuous": "Stop continuous auto-labeling",
         "cannot_continue": "Cannot continue continuous auto-labeling",
         "cannot_start": "Cannot start continuous auto-labeling",
-        "active_run_exists_guidance": (
-            "An unfinished continuous auto-labeling run already exists "
-            "(run {run_id}). Close this labeling window, then choose "
-            '"Process remaining auto-labeling" from the project labeling '
-            "menu. Saved results from the existing run are preserved."
-        ),
         "fast_tooltip": (
             "Fast uses a 0.0 s delay and does not switch the main canvas "
             "for each image."
@@ -135,6 +138,10 @@ AUTO_LABELING_TEXT_V1 = MappingProxyType(
             "{pending}  |  stale {stale}"
         ),
         "audit_action_failed": "Audit action failed",
+        "audit_unsaved_title": "Unsaved annotation",
+        "audit_unsaved_prompt": (
+            "Save or discard the current changes before switching review images."
+        ),
         "status_not_applicable": "Not applicable",
         "status_pending": "Pending",
         "status_staged_approved": "Staged approved",

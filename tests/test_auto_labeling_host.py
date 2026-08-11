@@ -25,37 +25,29 @@ from anylabeling.views.labeling.widgets.auto_labeling.auto_labeling import (
 
 
 class _Store:
-    def read_config(self, run_id):
-        return {"run_id": run_id}
+    def read_item(self, image_id):
+        return {
+            "image_id": image_id,
+            "revision": 0,
+            "staged_document_digest": "MISSING",
+            "staged_semantic_digest": "MISSING",
+        }
 
-    def read_queue(self, run_id):
-        return {"run_id": run_id}
-
-    def read_state(self, run_id):
-        return {"run_id": run_id}
-
-    def read_item(self, run_id, image_id):
-        return {"run_id": run_id, "image_id": image_id}
-
-    def list_items(self, run_id):
-        return []
-
-    def update_state(self, run_id, expected_state_revision, changes):
-        return changes
-
-    def update_item(
+    def recover_commit(
         self,
-        run_id,
         image_id,
-        expected_item_revision,
-        changes,
+        current_document_digest,
+        current_semantic_digest,
     ):
-        return changes
+        return "RETRY", self.read_item(image_id)
 
 
 class _Sink:
-    def publish(self, event, *, label_path=None):
-        return event, label_path
+    def prepare(self, event, *, label_path=None):
+        return "PREPARED", event, label_path
+
+    def checkpoint(self, event, *, label_path=None):
+        return "CHECKPOINTED", event, label_path
 
 
 class _Lease:
@@ -68,8 +60,9 @@ class _Lease:
 
 
 def _context(root):
-    image_root = root / "labeling_sessions" / "session-a" / "images"
-    label_root = root / "labeling_sessions" / "session-a" / "labels"
+    session_root = root / "labeling_sessions" / "session-a"
+    image_root = session_root / "images"
+    label_root = session_root / "labels"
     image_root.mkdir(parents=True)
     label_root.mkdir()
     image_path = os.path.normcase(os.path.realpath(image_root / "image.jpg"))
@@ -86,17 +79,19 @@ def _context(root):
     return SimpleNamespace(
         project_id="project-a",
         active_session_id="session-a",
-        active_run_id=None,
         image_records_by_path={image_path: record},
-        run_store=_Store(),
+        annotation_item_store=_Store(),
         model_fingerprint_provider=lambda: {
             "fingerprint_schema_version": 1,
             "model_digest": "b" * 64,
         },
         annotation_commit_sink=_Sink(),
+        audit_client=None,
         images_ready=False,
         workset_source="SESSION_WORKSET",
         annotation_session_lease=_Lease(),
+        session_purpose="labeling",
+        _session_root=os.path.normcase(os.path.realpath(session_root)),
     )
 
 
@@ -114,6 +109,8 @@ class AutoLabelingHostProtocolTests(unittest.TestCase):
                 validate_auto_labeling_host_context(context), context
             )
             self.assertIsInstance(context, AutoLabelingHostContextProtocol)
+            self.assertFalse(hasattr(context, "active_run_id"))
+            self.assertFalse(hasattr(context, "run_store"))
             source = Path(
                 __import__(
                     "anylabeling.views.labeling.utils.auto_labeling_host",

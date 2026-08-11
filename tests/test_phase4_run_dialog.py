@@ -64,7 +64,7 @@ class FastRunDialogTests(unittest.TestCase):
                 {
                     "range": "CURRENT_TO_END",
                     "filter": "ALL",
-                    "write_policy": "INHERIT_MODEL_POLICY",
+                    "write_policy": "SKIP_EXISTING",
                 },
             )
             label_text = "\n".join(
@@ -77,18 +77,18 @@ class FastRunDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
-    def test_active_run_start_failure_explains_safe_resume_path(self):
+    def test_active_process_error_does_not_advertise_persistent_resume(self):
         error = FastControllerError(
-            "active_run_exists",
-            "run-existing:prepared_run_state_not_pristine",
+            "fast_controller_already_active",
+            "current_process_sequence_is_active",
         )
 
         message = continuous_start_failure_text_v1(error)
 
-        self.assertIn("run-existing", message)
-        self.assertIn("Process remaining auto-labeling", message)
-        self.assertIn("Saved results", message)
-        self.assertNotIn("prepared_run_state_not_pristine", message)
+        self.assertIn("fast_controller_already_active", message)
+        self.assertNotIn("Process remaining auto-labeling", message)
+        self.assertNotIn("Saved results", message)
+        self.assertIn("current_process_sequence_is_active", message)
 
     def test_progress_controls_and_all_skipped_terminal_state(self):
         dialog = FastRunProgressDialog()
@@ -469,11 +469,10 @@ class FastRunRoutingTests(unittest.TestCase):
             context = SimpleNamespace(
                 project_id="project-a",
                 active_session_id="session-a",
-                active_run_id="run-a",
                 image_records_by_path={
                     record.canonical_session_image_path: record
                 },
-                run_store=store,
+                annotation_item_store=store,
                 annotation_commit_sink=sink,
             )
             widget = SimpleNamespace(

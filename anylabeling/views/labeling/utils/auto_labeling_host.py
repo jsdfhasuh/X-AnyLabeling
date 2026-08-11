@@ -1,13 +1,11 @@
-"""Duck-typed host boundary for embedded auto-labeling services."""
+"""Duck-typed image-centric host boundary for embedded auto labeling."""
 
-import copy
 import os
 import re
 import unicodedata
 from typing import Protocol, runtime_checkable
 from urllib.parse import parse_qsl, urlsplit
 
-from .auto_labeling_run_store import AnnotationCommitSinkProtocolV1
 from .auto_labeling_audit import StagedAuditClientProtocolV1
 
 
@@ -24,26 +22,16 @@ class HostContextValidationError(ValueError):
 
 
 @runtime_checkable
-class PersistentRunStoreProtocolV1(Protocol):
-    def read_config(self, run_id):
+class AnnotationItemStoreProtocolV1(Protocol):
+    def read_item(self, image_id):
         pass
 
-    def read_queue(self, run_id):
-        pass
-
-    def read_state(self, run_id):
-        pass
-
-    def read_item(self, run_id, image_id):
-        pass
-
-    def list_items(self, run_id):
-        pass
-
-    def update_state(self, run_id, expected_state_revision, changes):
-        pass
-
-    def update_item(self, run_id, image_id, expected_item_revision, changes):
+    def recover_commit(
+        self,
+        image_id,
+        current_document_digest,
+        current_semantic_digest,
+    ):
         pass
 
 
@@ -51,46 +39,15 @@ class PersistentRunStoreProtocolV1(Protocol):
 class AutoLabelingHostContextProtocol(Protocol):
     project_id: str
     active_session_id: str
-    active_run_id: str | None
     image_records_by_path: dict
-    run_store: PersistentRunStoreProtocolV1
+    annotation_item_store: AnnotationItemStoreProtocolV1
     model_fingerprint_provider: object
     annotation_commit_sink: object
+    audit_client: object
     images_ready: bool
     workset_source: str
     annotation_session_lease: object
-
-
-@runtime_checkable
-class SequenceRunActivationHostProtocolV1(
-    AutoLabelingHostContextProtocol,
-    Protocol,
-):
-    def activate_sequence_run(self, request):
-        pass
-
-
-@runtime_checkable
-class ResumeSequenceHostProtocolV1(
-    AutoLabelingHostContextProtocol,
-    Protocol,
-):
-    def read_active_run_resume_spec(self):
-        pass
-
-    def resume_sequence_run(self, request):
-        pass
-
-    def update_active_run_state(self, expected_state_revision, changes):
-        pass
-
-    def update_active_run_item(
-        self,
-        image_id,
-        expected_item_revision,
-        changes,
-    ):
-        pass
+    session_purpose: str
 
 
 @runtime_checkable
@@ -127,14 +84,15 @@ def _validate_context_header(context):
     required = (
         "project_id",
         "active_session_id",
-        "active_run_id",
         "image_records_by_path",
-        "run_store",
+        "annotation_item_store",
         "model_fingerprint_provider",
         "annotation_commit_sink",
+        "audit_client",
         "images_ready",
         "workset_source",
         "annotation_session_lease",
+        "session_purpose",
     )
     missing = [field for field in required if not hasattr(context, field)]
     if missing:
@@ -148,30 +106,31 @@ def _validate_context_header(context):
         or not context.active_session_id.strip()
     ):
         raise HostContextValidationError("invalid_host_session_id")
-    if context.active_run_id is not None and (
-        type(context.active_run_id) is not str
-        or not context.active_run_id.strip()
-    ):
-        raise HostContextValidationError("invalid_host_run_id")
     if context.workset_source != "SESSION_WORKSET":
         raise HostContextValidationError("invalid_host_workset_source")
     if type(context.images_ready) is not bool:
         raise HostContextValidationError("invalid_host_images_ready")
+    if context.session_purpose not in {"labeling", "review"}:
+        raise HostContextValidationError("invalid_host_session_purpose")
 
 
 def _validate_context_services(context):
-    if not isinstance(context.run_store, PersistentRunStoreProtocolV1):
-        raise HostContextValidationError("invalid_host_run_store")
+    if not isinstance(
+        context.annotation_item_store,
+        AnnotationItemStoreProtocolV1,
+    ):
+        raise HostContextValidationError("invalid_annotation_item_store")
     if context.model_fingerprint_provider is not None and not callable(
         context.model_fingerprint_provider
     ):
         raise HostContextValidationError("invalid_model_fingerprint_provider")
-    if context.annotation_commit_sink is not None and not isinstance(
-        context.annotation_commit_sink,
-        AnnotationCommitSinkProtocolV1,
+    sink = context.annotation_commit_sink
+    if sink is None or not all(
+        callable(getattr(sink, name, None))
+        for name in ("prepare", "checkpoint")
     ):
         raise HostContextValidationError("invalid_annotation_commit_sink")
-    audit_client = getattr(context, "staged_audit_client", None)
+    audit_client = context.audit_client
     if audit_client is not None and not isinstance(
         audit_client,
         StagedAuditClientProtocolV1,
@@ -242,6 +201,14 @@ def validate_auto_labeling_host_context(context):
     image_paths = set()
     label_paths = set()
     sequences = set()
+    session_root = getattr(context, "_session_root", None)
+    if (
+        type(session_root) is not str
+        or _canonical(session_root) != session_root
+    ):
+        raise HostContextValidationError("invalid_host_session_root")
+    if not os.path.isdir(session_root) or os.path.islink(session_root):
+        raise HostContextValidationError("invalid_host_session_root")
     for key, record in records.items():
         normalized_image_id, image_path, label_path, sequence = (
             _validate_record(key, record)
@@ -256,6 +223,18 @@ def validate_auto_labeling_host_context(context):
             raise HostContextValidationError(
                 "duplicate_host_manifest_sequence"
             )
+        try:
+            image_contained = (
+                os.path.commonpath((image_path, session_root)) == session_root
+            )
+            label_contained = (
+                os.path.commonpath((label_path, session_root)) == session_root
+            )
+        except ValueError:
+            image_contained = False
+            label_contained = False
+        if not image_contained or not label_contained:
+            raise HostContextValidationError("host_record_path_escape")
         image_ids.add(normalized_image_id)
         image_paths.add(image_path)
         label_paths.add(label_path)
@@ -295,88 +274,10 @@ def resolve_model_fingerprint(context):
     return validate_model_fingerprint_payload(provider())
 
 
-def resolve_resume_sequence_spec_v1(context):
-    """Read and cross-check the immutable config and current resume binding."""
+def resolve_resume_sequence_spec_v1(_context):
+    """Legacy API retained as an explicit tombstone."""
 
-    context = validate_auto_labeling_host_context(context)
-    if context.active_run_id is None:
-        raise HostContextValidationError("resume_run_id_missing")
-    read_spec = getattr(context, "read_active_run_resume_spec", None)
-    resume = getattr(context, "resume_sequence_run", None)
-    if not callable(read_spec) or not callable(resume):
-        raise HostContextValidationError("resume_host_service_unavailable")
-    spec = read_spec()
-    if type(spec) is not dict or set(spec) != {"config", "binding"}:
-        raise HostContextValidationError("invalid_resume_spec")
-    config = spec["config"]
-    binding = spec["binding"]
-    config_fields = {
-        "run_config_schema_version",
-        "run_id",
-        "run_kind",
-        "project_id",
-        "created_at",
-        "created_by_app_version",
-        "workset_source",
-        "workset_digest",
-        "delay_seconds",
-        "range",
-        "filter",
-        "write_policy",
-        "model_fingerprint",
-        "parameter_snapshot",
-        "label_path_policy",
-        "document_digest_schema_version",
-        "semantic_digest_schema_version",
-        "config_digest",
-    }
-    binding_fields = {
-        "binding_schema_version",
-        "binding_id",
-        "project_id",
-        "run_id",
-        "session_id",
-        "attempt_id",
-        "purpose",
-        "status",
-        "created_at",
-        "updated_at",
-    }
-    if type(config) is not dict or set(config) != config_fields:
-        raise HostContextValidationError("invalid_resume_run_config")
-    if type(binding) is not dict or set(binding) != binding_fields:
-        raise HostContextValidationError("invalid_resume_binding")
-    if (
-        config["run_config_schema_version"] != 1
-        or config["run_kind"] != "AUTO_LABELING"
-        or config["run_id"] != context.active_run_id
-        or config["project_id"] != context.project_id
-        or config["workset_source"] != "SESSION_WORKSET"
-        or config["label_path_policy"] != "HOST_CONTEXT"
-    ):
-        raise HostContextValidationError("resume_run_config_identity_mismatch")
-    if (
-        binding["binding_schema_version"] != 1
-        or binding["purpose"] != "resume_remaining"
-        or binding["status"] != "committed"
-        or binding["project_id"] != context.project_id
-        or binding["run_id"] != context.active_run_id
-        or binding["session_id"] != context.active_session_id
-        or type(binding["attempt_id"]) is not str
-        or not binding["attempt_id"].strip()
-        or type(binding["binding_id"]) is not str
-        or not binding["binding_id"].strip()
-    ):
-        raise HostContextValidationError("resume_binding_identity_mismatch")
-    persisted_config = context.run_store.read_config(context.active_run_id)
-    state = context.run_store.read_state(context.active_run_id)
-    if persisted_config != config:
-        raise HostContextValidationError("resume_config_snapshot_mismatch")
-    if state.get("binding") != binding:
-        raise HostContextValidationError("resume_binding_snapshot_mismatch")
-    validate_model_fingerprint_payload(config["model_fingerprint"])
-    validate_model_fingerprint_payload(config["parameter_snapshot"])
-    return copy.deepcopy(spec)
+    raise HostContextValidationError("persistent_auto_labeling_resume_removed")
 
 
 def set_auto_labeling_host_context(context):

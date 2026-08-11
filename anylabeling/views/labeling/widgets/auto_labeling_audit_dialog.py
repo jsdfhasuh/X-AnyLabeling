@@ -185,6 +185,81 @@ class _StagedAuditOperationWorker(QtCore.QObject):
             raise StagedAuditError(error)
 
 
+def _build_audit_controls(view, *, compact=False):
+    layout = QtWidgets.QVBoxLayout(view)
+    margins = (8, 8, 8, 8) if compact else (16, 14, 16, 14)
+    layout.setContentsMargins(*margins)
+    layout.setSpacing(8 if compact else 10)
+
+    view.identity_label = QtWidgets.QLabel()
+    view.identity_label.setTextInteractionFlags(
+        QtCore.Qt.TextSelectableByMouse
+    )
+    view.identity_label.setWordWrap(True)
+    view.status_label = QtWidgets.QLabel()
+    view.status_label.setWordWrap(True)
+    view.detail_label = QtWidgets.QLabel()
+    view.detail_label.setWordWrap(True)
+    view.counts_label = QtWidgets.QLabel()
+    view.counts_label.setWordWrap(True)
+    layout.addWidget(view.identity_label)
+    layout.addWidget(view.status_label)
+    layout.addWidget(view.detail_label)
+    layout.addWidget(view.counts_label)
+
+    view.activity_bar = QtWidgets.QProgressBar()
+    view.activity_bar.setRange(0, 0)
+    view.activity_bar.setTextVisible(False)
+    view.activity_bar.setFixedHeight(4)
+    view.activity_bar.hide()
+    layout.addWidget(view.activity_bar)
+
+    navigation = QtWidgets.QHBoxLayout()
+    view.previous_button = QtWidgets.QPushButton(
+        auto_labeling_text_v1("previous")
+    )
+    view.next_button = QtWidgets.QPushButton(
+        auto_labeling_text_v1("next_pending")
+    )
+    navigation.addWidget(view.previous_button)
+    navigation.addWidget(view.next_button)
+    layout.addLayout(navigation)
+
+    decisions = QtWidgets.QGridLayout() if compact else QtWidgets.QHBoxLayout()
+    view.needs_fix_button = QtWidgets.QPushButton(
+        auto_labeling_text_v1("mark_needs_fix")
+    )
+    view.save_approve_button = QtWidgets.QPushButton(
+        auto_labeling_text_v1("save_approve_next")
+    )
+    view.approve_button = QtWidgets.QPushButton(
+        auto_labeling_text_v1("approve_next")
+    )
+    view.finish_button = QtWidgets.QPushButton(
+        auto_labeling_text_v1("finish_audit")
+    )
+    if compact:
+        decisions.addWidget(view.needs_fix_button, 0, 0)
+        decisions.addWidget(view.save_approve_button, 0, 1)
+        decisions.addWidget(view.approve_button, 1, 0)
+        decisions.addWidget(view.finish_button, 1, 1)
+    else:
+        decisions.addWidget(view.needs_fix_button)
+        decisions.addStretch(1)
+        decisions.addWidget(view.save_approve_button)
+        decisions.addWidget(view.approve_button)
+        decisions.addWidget(view.finish_button)
+    layout.addLayout(decisions)
+    layout.addStretch(1)
+
+    view.previous_button.clicked.connect(view.previous_requested)
+    view.next_button.clicked.connect(view.next_requested)
+    view.needs_fix_button.clicked.connect(view.needs_fix_requested)
+    view.save_approve_button.clicked.connect(view.save_approve_requested)
+    view.approve_button.clicked.connect(view.approve_requested)
+    view.finish_button.clicked.connect(view.finish_requested)
+
+
 class AutoLabelingAuditDialog(QtWidgets.QDialog):
     approve_requested = QtCore.pyqtSignal()
     save_approve_requested = QtCore.pyqtSignal()
@@ -200,68 +275,7 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
         self.setWindowModality(QtCore.Qt.NonModal)
         self.setMinimumWidth(560)
 
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(10)
-
-        self.identity_label = QtWidgets.QLabel()
-        self.identity_label.setTextInteractionFlags(
-            QtCore.Qt.TextSelectableByMouse
-        )
-        self.status_label = QtWidgets.QLabel()
-        self.detail_label = QtWidgets.QLabel()
-        self.detail_label.setWordWrap(True)
-        self.counts_label = QtWidgets.QLabel()
-        layout.addWidget(self.identity_label)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.detail_label)
-        layout.addWidget(self.counts_label)
-
-        self.activity_bar = QtWidgets.QProgressBar()
-        self.activity_bar.setRange(0, 0)
-        self.activity_bar.setTextVisible(False)
-        self.activity_bar.setFixedHeight(4)
-        self.activity_bar.hide()
-        layout.addWidget(self.activity_bar)
-
-        navigation = QtWidgets.QHBoxLayout()
-        self.previous_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("previous")
-        )
-        self.next_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("next_pending")
-        )
-        navigation.addWidget(self.previous_button)
-        navigation.addWidget(self.next_button)
-        navigation.addStretch(1)
-        layout.addLayout(navigation)
-
-        decisions = QtWidgets.QHBoxLayout()
-        self.needs_fix_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("mark_needs_fix")
-        )
-        self.save_approve_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("save_approve_next")
-        )
-        self.approve_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("approve_next")
-        )
-        self.finish_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("finish_audit")
-        )
-        decisions.addWidget(self.needs_fix_button)
-        decisions.addStretch(1)
-        decisions.addWidget(self.save_approve_button)
-        decisions.addWidget(self.approve_button)
-        decisions.addWidget(self.finish_button)
-        layout.addLayout(decisions)
-
-        self.previous_button.clicked.connect(self.previous_requested)
-        self.next_button.clicked.connect(self.next_requested)
-        self.needs_fix_button.clicked.connect(self.needs_fix_requested)
-        self.save_approve_button.clicked.connect(self.save_approve_requested)
-        self.approve_button.clicked.connect(self.approve_requested)
-        self.finish_button.clicked.connect(self.finish_requested)
+        _build_audit_controls(self)
 
     def set_busy(self, busy, finishing=False):
         busy = bool(busy)
@@ -322,6 +336,35 @@ class AutoLabelingAuditDialog(QtWidgets.QDialog):
         event.ignore()
 
 
+class AutoLabelingAuditPanel(QtWidgets.QWidget):
+    """Embedded audit controls for the labeling sidebar."""
+
+    approve_requested = QtCore.pyqtSignal()
+    save_approve_requested = QtCore.pyqtSignal()
+    needs_fix_requested = QtCore.pyqtSignal()
+    previous_requested = QtCore.pyqtSignal()
+    next_requested = QtCore.pyqtSignal()
+    finish_requested = QtCore.pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._allow_close = False
+        self.setMinimumWidth(280)
+        _build_audit_controls(self, compact=True)
+
+    set_busy = AutoLabelingAuditDialog.set_busy
+    set_item = AutoLabelingAuditDialog.set_item
+    set_summary = AutoLabelingAuditDialog.set_summary
+    allow_close = AutoLabelingAuditDialog.allow_close
+
+    def closeEvent(self, event):
+        if self._allow_close:
+            super().closeEvent(event)
+            return
+        self.finish_requested.emit()
+        event.ignore()
+
+
 class StagedAuditUiSession(QtCore.QObject):
     """Sequence stable audit actions around one LabelingWidget."""
 
@@ -338,7 +381,13 @@ class StagedAuditUiSession(QtCore.QObject):
             )
         self.widget = widget
         self.client = client
-        self.dialog = self.dialog_class(widget)
+        panel_factory = getattr(
+            widget, "create_auto_labeling_audit_panel", None
+        )
+        if callable(panel_factory):
+            self.dialog = panel_factory()
+        else:
+            self.dialog = self.dialog_class(widget)
         self.guard = AuditInteractionGuard(widget)
         self.items = []
         self.current_image_id = None
@@ -365,7 +414,15 @@ class StagedAuditUiSession(QtCore.QObject):
         if not self._start_worker():
             return False
         self.guard.activate()
-        self.dialog.show()
+        panel_presenter = getattr(
+            self.widget,
+            "show_auto_labeling_audit_panel",
+            None,
+        )
+        if callable(panel_presenter):
+            panel_presenter(self.dialog)
+        else:
+            self.dialog.show()
         if self._submit("begin", {}):
             return True
         self._finish_requested = True
@@ -458,10 +515,12 @@ class StagedAuditUiSession(QtCore.QObject):
                 self._finish_requested = True
                 return
             self._summary = result["summary"]
+            self._publish_pending_count()
             self._present_item(result["item"])
             return
         item = self._remember_item(result["item"])
         self._summary = result["summary"]
+        self._publish_pending_count()
         if kind == "load":
             self._present_item(item)
         elif kind == "approve":
@@ -504,8 +563,38 @@ class StagedAuditUiSession(QtCore.QObject):
         if bool(getattr(self.widget, "auto_labeling_commit_blocked", False)):
             raise StagedAuditError("audit_integrity_refresh_required")
 
-    def _start_load(self, image_id):
+    def _resolve_dirty_navigation(self):
+        if bool(getattr(self.widget, "auto_labeling_commit_blocked", False)):
+            raise StagedAuditError("audit_integrity_refresh_required")
+        if not bool(getattr(self.widget, "dirty", False)):
+            return True
+        answer = QtWidgets.QMessageBox.warning(
+            self.widget,
+            auto_labeling_text_v1("audit_unsaved_title"),
+            auto_labeling_text_v1("audit_unsaved_prompt"),
+            QtWidgets.QMessageBox.Save
+            | QtWidgets.QMessageBox.Discard
+            | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if answer == QtWidgets.QMessageBox.Cancel:
+            return False
+        if answer == QtWidgets.QMessageBox.Save:
+            if not self.widget.save_file() or bool(
+                getattr(self.widget, "dirty", False)
+            ):
+                raise StagedAuditError("audit_save_failed")
+        else:
+            filename = getattr(self.widget, "filename", None)
+            self.widget.set_clean()
+            if filename and not self.widget.load_file(filename):
+                raise StagedAuditError("audit_discard_reload_failed")
         self._ensure_clean_and_coordinated()
+        return True
+
+    def _start_load(self, image_id):
+        if not self._resolve_dirty_navigation():
+            return False
         return self._submit("load", {"image_id": image_id})
 
     def _present_item(self, item):
@@ -585,7 +674,6 @@ class StagedAuditUiSession(QtCore.QObject):
 
     def previous(self):
         try:
-            self._ensure_clean_and_coordinated()
             current = self._current_item()["sequence"]
             candidates = [
                 item for item in self.items if item["sequence"] < current
@@ -599,7 +687,6 @@ class StagedAuditUiSession(QtCore.QObject):
 
     def next_pending(self):
         try:
-            self._ensure_clean_and_coordinated()
             return self._start_next_pending()
         except Exception as exc:  # noqa: B902
             self._warn(exc)
@@ -633,7 +720,8 @@ class StagedAuditUiSession(QtCore.QObject):
             self.dialog.set_busy(True, finishing=True)
             return False
         try:
-            self._ensure_clean_and_coordinated()
+            if not self._resolve_dirty_navigation():
+                return False
         except Exception as exc:  # noqa: B902
             self._warn(exc)
             return False
@@ -690,9 +778,33 @@ class StagedAuditUiSession(QtCore.QObject):
         self._closed = True
         if getattr(self.widget, "_auto_labeling_audit_session", None) is self:
             self.widget._auto_labeling_audit_session = None
+        panel_remover = getattr(
+            self.widget,
+            "remove_auto_labeling_audit_panel",
+            None,
+        )
+        if callable(panel_remover):
+            panel_remover(self.dialog)
         generation = self._shutdown_generation
         if generation is not None:
             QtCore.QTimer.singleShot(
                 0,
                 lambda: self.safe_to_close.emit(generation),
             )
+
+    def _publish_pending_count(self):
+        if self._summary is None:
+            return
+        count = self._summary.get("pending_review")
+        if count is None:
+            count = sum(
+                int(self._summary.get(field, 0) or 0)
+                for field in ("pending", "needs_fix", "stale")
+            )
+        setter = getattr(
+            self.widget,
+            "set_auto_labeling_pending_review_count",
+            None,
+        )
+        if callable(setter):
+            setter(count, scope="session")
