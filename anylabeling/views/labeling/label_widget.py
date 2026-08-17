@@ -5121,9 +5121,13 @@ class LabelingWidget(LabelDialog):
         auto_widget = getattr(self, "auto_labeling_widget", None)
         if auto_widget is not None:
             auto_widget.set_auto_labeling_host_context(context)
-        self._historical_pending_review_count = int(
-            getattr(context, "historical_pending_review_count", 0) or 0
+        authoritative_counts = (
+            LabelingWidget.refresh_auto_labeling_pending_review_counts(self)
         )
+        if authoritative_counts is None:
+            self._historical_pending_review_count = int(
+                getattr(context, "historical_pending_review_count", 0) or 0
+            )
         refresh_pending = getattr(
             self,
             "_refresh_pending_review_controls",
@@ -5132,6 +5136,35 @@ class LabelingWidget(LabelDialog):
         if callable(refresh_pending):
             refresh_pending()
         return context
+
+    def refresh_auto_labeling_pending_review_counts(self, image_id=None):
+        """Apply host-owned Review counts without trusting process-local totals."""
+
+        context = getattr(self, "auto_labeling_host_context", None)
+        refresh = getattr(context, "refresh_pending_review_counts", None)
+        if not callable(refresh):
+            return None
+        try:
+            counts = refresh(image_id)
+        except Exception:
+            return None
+        if not isinstance(counts, dict):
+            return None
+        session_count = counts.get("session")
+        historical_count = counts.get("historical")
+        if type(session_count) is not int or type(historical_count) is not int:
+            return None
+        LabelingWidget.set_auto_labeling_pending_review_count(
+            self,
+            session_count,
+            scope="session",
+        )
+        LabelingWidget.set_auto_labeling_pending_review_count(
+            self,
+            historical_count,
+            scope="historical",
+        )
+        return counts
 
     def start_auto_labeling_review(self, client=None):
         """Open staged review without loading a model or creating a run."""
@@ -5201,12 +5234,14 @@ class LabelingWidget(LabelDialog):
     def set_auto_labeling_pending_review_count(
         self, count, *, scope="session"
     ):
+        if scope not in {"session", "historical"}:
+            raise ValueError("invalid_pending_review_scope")
         count = max(0, int(count or 0))
         if scope == "historical":
             self._historical_pending_review_count = count
         else:
             self._session_pending_review_count = count
-        self._refresh_pending_review_controls()
+        LabelingWidget._refresh_pending_review_controls(self)
 
     def _refresh_pending_review_controls(self):
         total = (
@@ -5394,6 +5429,15 @@ class LabelingWidget(LabelDialog):
     def clear_auto_labeling_host_context(self):
         context = self.auto_labeling_host_context
         self.auto_labeling_host_context = None
+        self._session_pending_review_count = 0
+        self._historical_pending_review_count = 0
+        refresh_pending = getattr(
+            self,
+            "_refresh_pending_review_controls",
+            None,
+        )
+        if callable(refresh_pending):
+            refresh_pending()
         clear_global_auto_labeling_host_context(context)
         auto_widget = getattr(self, "auto_labeling_widget", None)
         if auto_widget is not None:

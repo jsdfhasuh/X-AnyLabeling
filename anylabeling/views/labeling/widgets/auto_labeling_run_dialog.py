@@ -873,6 +873,13 @@ class FastRunUiSession(QtCore.QObject):
         self.progress.update_progress(summary)
         if type(summary) is not dict:
             return
+        refresh_counts = getattr(
+            self.labeling_widget,
+            "refresh_auto_labeling_pending_review_counts",
+            None,
+        )
+        if callable(refresh_counts) and refresh_counts() is not None:
+            return
         pending_review = summary.get("pending_review")
         if type(pending_review) is not int or pending_review < 0:
             return
@@ -928,6 +935,13 @@ class FastRunUiSession(QtCore.QObject):
             if item is None or _canonical(item.text()) != image_path:
                 return
             item.setCheckState(QtCore.Qt.Checked)
+            refresh_counts = getattr(
+                self.labeling_widget,
+                "refresh_auto_labeling_pending_review_counts",
+                None,
+            )
+            if callable(refresh_counts):
+                refresh_counts(image_id)
         except Exception:
             # The label transaction is already complete; UI drift is non-fatal.
             return
@@ -1000,11 +1014,19 @@ class FastRunUiSession(QtCore.QObject):
             self.guard.restore(self.controller.modified_image_ids)
         self._reset_entry_action()
         self._prepare_audit_client(summary)
-        pending_setter = getattr(
+        refresh_counts = getattr(
             self.labeling_widget,
-            "set_auto_labeling_pending_review_count",
+            "refresh_auto_labeling_pending_review_counts",
             None,
         )
+        if callable(refresh_counts) and refresh_counts() is not None:
+            pending_setter = None
+        else:
+            pending_setter = getattr(
+                self.labeling_widget,
+                "set_auto_labeling_pending_review_count",
+                None,
+            )
         if callable(pending_setter):
             pending_setter(summary.get("pending_review", 0), scope="session")
         self.progress.finish_run(summary)

@@ -236,6 +236,28 @@ class FastRunDialogTests(unittest.TestCase):
             )
         self.assertEqual(pending_setter.call_count, 2)
 
+    def test_host_progress_does_not_replace_authoritative_pending_count(self):
+        progress = SimpleNamespace(update_progress=mock.Mock())
+        pending_setter = mock.Mock()
+        refresh = mock.Mock(
+            return_value={"session": 1, "historical": 1, "total": 2}
+        )
+        session = SimpleNamespace(
+            progress=progress,
+            labeling_widget=SimpleNamespace(
+                refresh_auto_labeling_pending_review_counts=refresh,
+                set_auto_labeling_pending_review_count=pending_setter,
+            ),
+        )
+
+        FastRunUiSession._on_progress_changed(
+            session,
+            {"processed": 1, "pending_review": 0},
+        )
+
+        refresh.assert_called_once_with()
+        pending_setter.assert_not_called()
+
     def test_verified_commit_checks_only_the_matching_file_list_row(self):
         with tempfile.TemporaryDirectory() as tmp:
             first = os.path.normcase(

@@ -296,6 +296,42 @@ class AutoLabelingHostProtocolTests(unittest.TestCase):
             AutoLabelingWidget.clear_auto_labeling_host_context(holder)
             self.assertIsNone(holder.auto_labeling_host_context)
 
+    def test_host_pending_counts_override_process_local_summary_and_clear(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            context = _context(Path(tmp))
+            counts = {"session": 1, "historical": 1, "total": 2}
+            context.refresh_pending_review_counts = mock.Mock(
+                return_value=counts
+            )
+            auto_widget = SimpleNamespace(
+                set_auto_labeling_host_context=mock.Mock(),
+                clear_auto_labeling_host_context=mock.Mock(),
+                set_pending_review_count=mock.Mock(),
+            )
+            widget = SimpleNamespace(
+                auto_labeling_host_context=None,
+                auto_labeling_widget=auto_widget,
+                _session_pending_review_count=0,
+                _historical_pending_review_count=0,
+            )
+
+            LabelingWidget.set_auto_labeling_host_context(widget, context)
+            self.assertEqual(widget._session_pending_review_count, 1)
+            self.assertEqual(widget._historical_pending_review_count, 1)
+            self.assertEqual(
+                LabelingWidget.refresh_auto_labeling_pending_review_counts(
+                    widget,
+                    "image-a",
+                ),
+                counts,
+            )
+            context.refresh_pending_review_counts.assert_called_with("image-a")
+            LabelingWidget.clear_auto_labeling_host_context(widget)
+            self.assertEqual(widget._session_pending_review_count, 0)
+            self.assertEqual(widget._historical_pending_review_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

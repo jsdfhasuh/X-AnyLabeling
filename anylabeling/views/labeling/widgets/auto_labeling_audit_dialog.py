@@ -515,12 +515,12 @@ class StagedAuditUiSession(QtCore.QObject):
                 self._finish_requested = True
                 return
             self._summary = result["summary"]
-            self._publish_pending_count()
+            self._publish_pending_count(result["item"].get("image_id"))
             self._present_item(result["item"])
             return
         item = self._remember_item(result["item"])
         self._summary = result["summary"]
-        self._publish_pending_count()
+        self._publish_pending_count(item.get("image_id"))
         if kind == "load":
             self._present_item(item)
         elif kind == "approve":
@@ -792,7 +792,14 @@ class StagedAuditUiSession(QtCore.QObject):
                 lambda: self.safe_to_close.emit(generation),
             )
 
-    def _publish_pending_count(self):
+    def _publish_pending_count(self, image_id=None):
+        refresh_counts = getattr(
+            self.widget,
+            "refresh_auto_labeling_pending_review_counts",
+            None,
+        )
+        if callable(refresh_counts) and refresh_counts(image_id) is not None:
+            return
         if self._summary is None:
             return
         count = self._summary.get("pending_review")

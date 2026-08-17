@@ -16,7 +16,7 @@ from .auto_labeling_run_store import (
 )
 
 
-_REVIEWABLE = {"pending", "needs_fix", "stale"}
+_REVIEWABLE = {"pending", "needs_fix", "stale", "conflict"}
 _APPROVED = {"staged_approved", "approved"}
 
 
@@ -269,6 +269,7 @@ class InMemoryStagedAuditClientV1:
                 "needs_fix": 0,
                 "pending": 0,
                 "stale": 0,
+                "conflict": 0,
             }
             for item in self._ordered_items():
                 status = item["review_status"]
@@ -277,7 +278,8 @@ class InMemoryStagedAuditClientV1:
                 elif status in counts:
                     counts[status] += 1
             counts["pending_review"] = sum(
-                counts[field] for field in ("pending", "needs_fix", "stale")
+                counts[field]
+                for field in ("pending", "needs_fix", "stale", "conflict")
             )
             return counts
 
