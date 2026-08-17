@@ -236,6 +236,37 @@ class FastRunDialogTests(unittest.TestCase):
             )
         self.assertEqual(pending_setter.call_count, 2)
 
+    def test_duplicate_progress_does_not_accumulate_pending_count(self):
+        from anylabeling.views.labeling.label_widget import LabelingWidget
+
+        progress = SimpleNamespace(update_progress=mock.Mock())
+        widget = SimpleNamespace(
+            _session_pending_review_count=0,
+            _historical_pending_review_count=0,
+        )
+
+        def set_pending(count, *, scope="session"):
+            return LabelingWidget.set_auto_labeling_pending_review_count(
+                widget,
+                count,
+                scope=scope,
+            )
+
+        widget.set_auto_labeling_pending_review_count = set_pending
+        session = SimpleNamespace(progress=progress, labeling_widget=widget)
+
+        FastRunUiSession._on_progress_changed(
+            session,
+            {"processed": 4, "pending_review": 1},
+        )
+        FastRunUiSession._on_progress_changed(
+            session,
+            {"processed": 4, "pending_review": 1},
+        )
+
+        self.assertEqual(widget._session_pending_review_count, 1)
+        self.assertEqual(widget._historical_pending_review_count, 0)
+
     def test_host_progress_does_not_replace_authoritative_pending_count(self):
         progress = SimpleNamespace(update_progress=mock.Mock())
         pending_setter = mock.Mock()
