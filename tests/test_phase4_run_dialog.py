@@ -207,6 +207,35 @@ class FastRunDialogTests(unittest.TestCase):
         finally:
             dialog.close()
 
+    def test_progress_uses_absolute_pending_review_count(self):
+        progress = SimpleNamespace(update_progress=mock.Mock())
+        pending_setter = mock.Mock()
+        session = SimpleNamespace(
+            progress=progress,
+            labeling_widget=SimpleNamespace(
+                set_auto_labeling_pending_review_count=pending_setter,
+            ),
+        )
+        summary = {"processed": 18, "pending_review": 18}
+
+        FastRunUiSession._on_progress_changed(session, summary)
+        FastRunUiSession._on_progress_changed(session, summary)
+
+        self.assertEqual(progress.update_progress.call_count, 2)
+        pending_setter.assert_has_calls(
+            [
+                mock.call(18, scope="session"),
+                mock.call(18, scope="session"),
+            ]
+        )
+
+        for invalid in (-1, True, "18", None):
+            FastRunUiSession._on_progress_changed(
+                session,
+                {"pending_review": invalid},
+            )
+        self.assertEqual(pending_setter.call_count, 2)
+
     def test_verified_commit_checks_only_the_matching_file_list_row(self):
         with tempfile.TemporaryDirectory() as tmp:
             first = os.path.normcase(

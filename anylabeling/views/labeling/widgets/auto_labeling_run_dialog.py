@@ -857,7 +857,7 @@ class FastRunUiSession(QtCore.QObject):
 
     def _connect_controls(self):
         self.controller.state_changed.connect(self._on_phase_changed)
-        self.controller.progress_changed.connect(self.progress.update_progress)
+        self.controller.progress_changed.connect(self._on_progress_changed)
         self.controller.waiting_error.connect(self.progress.show_waiting_error)
         self.controller.label_committed.connect(self._on_label_committed)
         self.controller.finished.connect(self._on_finished)
@@ -868,6 +868,21 @@ class FastRunUiSession(QtCore.QObject):
         self.progress.skip_requested.connect(self._skip)
         self.progress.review_now_requested.connect(self._review_now)
         self.progress.review_later_requested.connect(self._review_later)
+
+    def _on_progress_changed(self, summary):
+        self.progress.update_progress(summary)
+        if type(summary) is not dict:
+            return
+        pending_review = summary.get("pending_review")
+        if type(pending_review) is not int or pending_review < 0:
+            return
+        pending_setter = getattr(
+            self.labeling_widget,
+            "set_auto_labeling_pending_review_count",
+            None,
+        )
+        if callable(pending_setter):
+            pending_setter(pending_review, scope="session")
 
     def _on_label_committed(self, event):
         """Reflect a verified label commit in the file list only."""
