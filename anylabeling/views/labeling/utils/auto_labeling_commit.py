@@ -727,6 +727,7 @@ def atomic_write_label_document(
     allowed_root=None,
     image_source_path=None,
     reserved_paths=(),
+    before_write=None,
     after_replace_hook=None,
 ):
     """Atomically replace and reread a label under a document-digest CAS."""
@@ -739,7 +740,8 @@ def atomic_write_label_document(
         path, writer_document["imagePath"]
     )
     validated_document = validate_label_document(writer_document)
-    validate_document_digest_v1(pre_document_digest, allow_missing=True)
+    if pre_document_digest is not None:
+        validate_document_digest_v1(pre_document_digest, allow_missing=True)
     intended_digest = canonical_document_digest_v1(validated_document)
     intended_semantic_digest = semantic_annotation_digest_v1(
         validated_document
@@ -757,8 +759,12 @@ def atomic_write_label_document(
         current = resolve_existing_label(path)
         if current.presence == ANNOTATION_PRESENCE_INVALID:
             raise LabelConflictError("invalid_existing_label")
-        if current.document_digest != pre_document_digest:
+        if pre_document_digest is None:
+            pre_document_digest = current.document_digest
+        elif current.document_digest != pre_document_digest:
             raise LabelConflictError("conflict_pre_document_digest")
+        if callable(before_write):
+            before_write(copy.deepcopy(validated_document), current)
         try:
             descriptor, temporary_path = tempfile.mkstemp(
                 prefix=".auto-labeling-",

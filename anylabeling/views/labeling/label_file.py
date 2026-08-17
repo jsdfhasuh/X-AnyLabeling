@@ -15,7 +15,6 @@ from .schema import XLABEL_BASIC_FIELDS, create_xlabel_template
 from .shape import Shape
 from .utils.auto_labeling_commit import (
     atomic_write_label_document,
-    resolve_existing_label,
 )
 
 PIL.Image.MAX_IMAGE_PIXELS = None
@@ -147,6 +146,7 @@ class LabelFile:
         flags=None,
         pre_document_digest=None,
         before_write=None,
+        image_source_path=None,
     ):
         if image_data is not None:
             image_data = base64.b64encode(image_data).decode("utf-8")
@@ -189,16 +189,13 @@ class LabelFile:
                 raise LabelFileError(f"other_data field collision: {key}")
             data[key] = value
         try:
-            current = resolve_existing_label(filename)
-            if pre_document_digest is None:
-                pre_document_digest = current.document_digest
-            if callable(before_write):
-                before_write(copy.deepcopy(data), current)
             result = atomic_write_label_document(
                 filename,
                 data,
                 pre_document_digest=pre_document_digest,
                 allowed_root=osp.dirname(osp.abspath(filename)),
+                image_source_path=image_source_path,
+                before_write=before_write,
             )
             self.filename = filename
             self.document_digest = result.document_digest

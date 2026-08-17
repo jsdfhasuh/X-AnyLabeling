@@ -5,11 +5,16 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
 from anylabeling.app_info import __version__
 from anylabeling.views.labeling.label_file import LabelFile, LabelFileError
+from anylabeling.views.labeling.utils.auto_labeling_commit import (
+    canonical_document_digest_v1,
+    resolve_existing_label,
+)
 
 
 class LabelFileAtomicSaveRegressionTests(unittest.TestCase):
@@ -114,6 +119,64 @@ class LabelFileAtomicSaveRegressionTests(unittest.TestCase):
         self.assertEqual(
             self.label_path.read_text(encoding="utf-8"), "{broken"
         )
+
+    def test_sibling_image_directory_normalizes_before_callback_and_write(
+        self,
+    ):
+        images_dir = self.root / "images"
+        labels_dir = self.root / "labels"
+        images_dir.mkdir()
+        labels_dir.mkdir()
+        image_path = images_dir / "image-a.jpg"
+        label_path = labels_dir / "image-a.json"
+        Image.new("RGB", (8, 6), color=(20, 30, 40)).save(image_path)
+        observed = []
+
+        def before_write(document, current):
+            observed.append((document, current.document_digest))
+
+        LabelFile().save(
+            filename=label_path,
+            shapes=[],
+            image_path="../images/image-a.jpg",
+            image_source_path=image_path,
+            image_height=6,
+            image_width=8,
+            image_data=None,
+            other_data={"description": "sibling"},
+            flags={},
+            before_write=before_write,
+        )
+
+        self.assertEqual(len(observed), 1)
+        callback_document, callback_pre_digest = observed[0]
+        self.assertEqual(callback_document["imagePath"], "image-a.jpg")
+        self.assertNotIn("..", callback_document["imagePath"])
+        self.assertEqual(callback_pre_digest, "MISSING")
+        saved = json.loads(label_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["imagePath"], "image-a.jpg")
+        self.assertFalse(Path(saved["imagePath"]).is_absolute())
+        self.assertEqual(
+            canonical_document_digest_v1(callback_document),
+            resolve_existing_label(label_path).document_digest,
+        )
+
+    def test_callback_failure_happens_before_file_creation(self):
+        callback = mock.Mock(side_effect=RuntimeError("prepare failed"))
+        with self.assertRaisesRegex(LabelFileError, "prepare failed"):
+            LabelFile().save(
+                filename=self.label_path,
+                shapes=[],
+                image_path="sample.png",
+                image_height=6,
+                image_width=8,
+                image_data=None,
+                other_data={},
+                flags={},
+                before_write=callback,
+            )
+        callback.assert_called_once()
+        self.assertFalse(self.label_path.exists())
 
     def test_other_data_cannot_replace_writer_owned_fields(self):
         with self.assertRaisesRegex(LabelFileError, "field collision"):

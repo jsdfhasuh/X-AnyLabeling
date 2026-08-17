@@ -299,6 +299,143 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
         )
         self.assertEqual(self.sink.publish.call_count, 2)
 
+    def test_manual_and_auto_save_accept_sibling_image_directory(self):
+        images_dir = self.root / "images"
+        labels_dir = self.root / "labels"
+        images_dir.mkdir()
+        labels_dir.mkdir()
+        image_path = images_dir / "image.png"
+        label_path = labels_dir / "image.json"
+        Image.new("RGB", (8, 6), color=(20, 30, 40)).save(image_path)
+        _write(label_path, _document())
+
+        self.image_path = image_path
+        self.label_path = label_path
+        self.record.canonical_session_image_path = os.path.normcase(
+            os.path.realpath(image_path)
+        )
+        self.record.canonical_session_label_path = os.path.normcase(
+            os.path.realpath(label_path)
+        )
+        for writer in ("MANUAL_SAVE", "AUTO_SAVE"):
+            with self.subTest(writer=writer):
+                _write(label_path, _document())
+                bridge, sink = self._v2_bridge()
+                self.widget.filename = str(image_path)
+                self._configure_save_surface(auto_save=writer == "AUTO_SAVE")
+                self.widget.annotation_commit_bridge = bridge
+                self.assertTrue(
+                    LabelingWidget.save_labels(
+                        self.widget,
+                        str(label_path),
+                        writer_kind=writer,
+                    )
+                )
+                self.assertEqual(
+                    sink.prepare.call_args.args[0]["writer"], writer
+                )
+                self.assertEqual(
+                    [call[0] for call in sink.method_calls],
+                    ["prepare", "checkpoint"],
+                )
+                saved = json.loads(label_path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["imagePath"], "image.png")
+                self.assertNotIn("..", saved["imagePath"])
+                self.assertFalse(os.path.isabs(saved["imagePath"]))
+                current = resolve_existing_label(label_path)
+                event = sink.prepare.call_args.args[0]
+                self.assertEqual(
+                    event["intended_document_digest"],
+                    current.document_digest,
+                )
+                self.assertEqual(
+                    event["intended_semantic_digest"],
+                    current.semantic_digest,
+                )
+                self.assertFalse(self.widget.dirty)
+                self.assertFalse(self.widget.auto_labeling_commit_blocked)
+
+    def test_sibling_prepare_failure_does_not_write_and_keeps_blocker(self):
+        images_dir = self.root / "images"
+        labels_dir = self.root / "labels"
+        images_dir.mkdir()
+        labels_dir.mkdir()
+        image_path = images_dir / "image.png"
+        label_path = labels_dir / "image.json"
+        Image.new("RGB", (8, 6), color=(20, 30, 40)).save(image_path)
+        original = _document()
+        _write(label_path, original)
+        self.image_path = image_path
+        self.label_path = label_path
+        self.record.canonical_session_image_path = os.path.normcase(
+            os.path.realpath(image_path)
+        )
+        self.record.canonical_session_label_path = os.path.normcase(
+            os.path.realpath(label_path)
+        )
+        bridge, sink = self._v2_bridge()
+        sink.prepare.side_effect = RuntimeError("prepare failed")
+        self.widget.filename = str(image_path)
+        self._configure_save_surface()
+        self.widget.annotation_commit_bridge = bridge
+
+        self.assertFalse(
+            LabelingWidget.save_labels(
+                self.widget,
+                str(label_path),
+                writer_kind="AUTO_SAVE",
+            )
+        )
+        self.assertEqual(json.loads(label_path.read_text()), original)
+        sink.checkpoint.assert_not_called()
+        self.assertTrue(self.widget.dirty)
+        self.assertTrue(self.widget.auto_labeling_commit_blocked)
+        self.assertEqual(
+            self.widget.auto_labeling_commit_error["code"],
+            "manual_commit_sink_failed",
+        )
+
+    def test_sibling_write_failure_keeps_intent_and_can_roll_back(self):
+        images_dir = self.root / "images"
+        labels_dir = self.root / "labels"
+        images_dir.mkdir()
+        labels_dir.mkdir()
+        image_path = images_dir / "image.png"
+        label_path = labels_dir / "image.json"
+        Image.new("RGB", (8, 6), color=(20, 30, 40)).save(image_path)
+        original = _document()
+        _write(label_path, original)
+        self.image_path = image_path
+        self.label_path = label_path
+        self.record.canonical_session_image_path = os.path.normcase(
+            os.path.realpath(image_path)
+        )
+        self.record.canonical_session_label_path = os.path.normcase(
+            os.path.realpath(label_path)
+        )
+        bridge, sink = self._v2_bridge()
+        self.widget.filename = str(image_path)
+        self._configure_save_surface()
+        self.widget.annotation_commit_bridge = bridge
+
+        with mock.patch(
+            "anylabeling.views.labeling.utils.auto_labeling_commit.os.replace",
+            side_effect=OSError("replace failed"),
+        ):
+            self.assertFalse(
+                LabelingWidget.save_labels(
+                    self.widget,
+                    str(label_path),
+                    writer_kind="AUTO_SAVE",
+                )
+            )
+        self.assertEqual(json.loads(label_path.read_text()), original)
+        self.assertIsNotNone(bridge.pending_commit)
+        sink.checkpoint.return_value = "ROLLED_BACK"
+        self.assertEqual(bridge.integrity_refresh(), "ROLLED_BACK")
+        self.assertIsNone(bridge.pending_commit)
+        self.assertFalse(self.widget.auto_labeling_commit_blocked)
+
     def test_presentation_never_emits_manual_event(self):
         self.widget._sequence_presentation_session = {"token": "active"}
         self.assertEqual(

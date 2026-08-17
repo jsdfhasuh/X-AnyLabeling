@@ -261,8 +261,11 @@ class AnnotationCommitBridgeV1:
     def mark_write_failure(self, error, image_path, label_path):
         if self._pending_commit is None:
             return False
+        code = getattr(error, "code", None)
+        if not code:
+            code = getattr(getattr(error, "__cause__", None), "code", None)
         self._mark_failure(
-            getattr(error, "code", "label_write_failed"),
+            code or "label_write_failed",
             error,
             image_path,
             label_path,
