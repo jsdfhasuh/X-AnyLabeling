@@ -1982,6 +1982,7 @@ class LabelingWidget(LabelDialog):
             self.auto_labeling_widget.set_auto_labeling_host_context(
                 self.auto_labeling_host_context
             )
+        self.auto_labeling_widget.hide()
         self.auto_labeling_widget.auto_segmentation_requested.connect(
             self.on_auto_segmentation_requested
         )
@@ -2049,6 +2050,7 @@ class LabelingWidget(LabelDialog):
         # )
         central_layout.addWidget(self.label_instruction)
         central_layout.addSpacing(5)
+        central_layout.addWidget(self.auto_labeling_widget)
         central_layout.addWidget(scroll_area)
         central_layout.addWidget(self.compare_view_slider)
         layout.addItem(central_layout)
@@ -2179,14 +2181,6 @@ class LabelingWidget(LabelDialog):
 
         self.shape_text_edit.textChanged.connect(self.shape_text_changed)
 
-        self.auto_labeling_sidebar_page = QWidget()
-        auto_labeling_sidebar_layout = QVBoxLayout(
-            self.auto_labeling_sidebar_page
-        )
-        auto_labeling_sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        auto_labeling_sidebar_layout.addWidget(self.auto_labeling_widget)
-        auto_labeling_sidebar_layout.addStretch(1)
-
         self.audit_sidebar_page = QWidget()
         self.audit_sidebar_layout = QVBoxLayout(self.audit_sidebar_page)
         self.audit_sidebar_layout.setContentsMargins(0, 0, 0, 0)
@@ -2203,10 +2197,6 @@ class LabelingWidget(LabelDialog):
         self.right_sidebar_tabs.addTab(
             self.labels_sidebar_page,
             auto_labeling_text_v1("labels_tab"),
-        )
-        self.right_sidebar_tabs.addTab(
-            self.auto_labeling_sidebar_page,
-            auto_labeling_text_v1("auto_labeling_tab"),
         )
         self.right_sidebar_tabs.addTab(self.audit_sidebar_page, "")
         self.right_sidebar_tabs.setCurrentWidget(self.labels_sidebar_page)
@@ -5266,11 +5256,6 @@ class LabelingWidget(LabelDialog):
                 setter(total)
 
     def _right_sidebar_tab_changed(self, _index):
-        is_auto = (
-            self.right_sidebar_tabs.currentWidget()
-            is self.auto_labeling_sidebar_page
-        )
-        self.actions.run_all_images.setEnabled(is_auto)
         self.update_thumbnail_display()
 
     def set_auto_labeling_images_ready(self, ready):
@@ -6205,16 +6190,11 @@ class LabelingWidget(LabelDialog):
             self.async_exif_scanner.start_scan(image_files)
 
     def toggle_auto_labeling_widget(self):
-        """Switch between the label and auto-labeling sidebar pages."""
-        if (
-            self.right_sidebar_tabs.currentWidget()
-            is self.auto_labeling_sidebar_page
-        ):
-            self.right_sidebar_tabs.setCurrentWidget(self.labels_sidebar_page)
-        else:
-            self.right_sidebar_tabs.setCurrentWidget(
-                self.auto_labeling_sidebar_page
-            )
+        """Show or hide the auto-labeling toolbar above the canvas."""
+        visible = not self.auto_labeling_widget.isVisible()
+        self.auto_labeling_widget.setVisible(visible)
+        self.actions.run_all_images.setEnabled(visible)
+        self.update_thumbnail_display()
 
     @pyqtSlot()
     def new_shapes_from_auto_labeling(self, auto_labeling_result):
