@@ -17,6 +17,7 @@ class MainWindow(QMainWindow):
         output=None,
         output_file=None,
         output_dir=None,
+        pose_config_path=None,
     ):
         super().__init__()
         self.app = app
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
             output=output,
             output_file=output_file,
             output_dir=output_dir,
+            pose_config_path=pose_config_path,
         )
         main_layout.addWidget(self.labeling_widget)
         widget = QWidget()

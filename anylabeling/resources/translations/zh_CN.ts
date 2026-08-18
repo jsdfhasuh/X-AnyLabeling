@@ -3001,8 +3001,8 @@ Results have been saved to:
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1084"/>
-        <source>Show score inside shapes</source>
-        <translation>在对象内部显示置信度</translation>
+        <source>Show scores with labels</source>
+        <translation>随标签显示置信度</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1045"/>
@@ -3307,8 +3307,8 @@ Reset the label as {}.</source>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1073"/>
-        <source>Show label inside shapes</source>
-        <translation>显示标签</translation>
+        <source>Show labels near shapes</source>
+        <translation>在图形附近显示标签</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="796"/>
@@ -6659,5 +6659,131 @@ Original images backed up to:
         <source>Thumbnail - Click anywhere to close</source>
         <translation>缩略图 - 点击任意位置关闭</translation>
     </message>
+</context>
+<context>
+    <name>AutoLabelingPhase8</name>
+    <message><source>Continuous auto-labeling...</source><translation>连续自动标注...</translation></message>
+    <message><source>Continuous auto-labeling</source><translation>连续自动标注</translation></message>
+    <message><source>All images</source><translation>全部图片</translation></message>
+    <message><source>Current image to end</source><translation>当前图片到末尾</translation></message>
+    <message><source>Base range</source><translation>基础范围</translation></message>
+    <message><source>All</source><translation>全部</translation></message>
+    <message><source>Only images without a valid annotation</source><translation>仅无有效标注的图片</translation></message>
+    <message><source>Filter</source><translation>筛选</translation></message>
+    <message><source>Skip existing annotations</source><translation>跳过已有标注</translation></message>
+    <message><source>Force replace</source><translation>强制替换</translation></message>
+    <message><source>Confirm replacement</source><translation>确认覆盖</translation></message>
+    <message><source>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</source><translation>Replace 可能覆盖当前范围内 {count} 个有效的已有标注。本次选择仅对当前操作生效。是否继续？</translation></message>
+    <message><source>Write policy</source><translation>写入策略</translation></message>
+    <message><source> s</source><translation> 秒</translation></message>
+    <message><source>Dwell time</source><translation>停留时间</translation></message>
+    <message><source>Model and parameters</source><translation>模型与参数</translation></message>
+    <message><source>Workset images</source><translation>工作集图片</translation></message>
+    <message><source>Existing annotations</source><translation>已有标注</translation></message>
+    <message><source>Host preparation failures</source><translation>宿主准备失败</translation></message>
+    <message><source>Fast</source><translation>快速</translation></message>
+    <message><source>Fast: infer and save each image in the background without switching the main canvas.</source><translation>快速：在后台逐图推理并保存，不切换主画布。</translation></message>
+    <message><source>Start Fast auto-labeling</source><translation>开始快速自动标注</translation></message>
+    <message><source>Visible</source><translation>可视</translation></message>
+    <message><source>Visible: display each result after a verified save, then advance after the configured dwell time.</source><translation>可视：每张结果验证保存后显示，并在设定的停留时间后继续。</translation></message>
+    <message><source>Start Visible auto-labeling</source><translation>开始可视自动标注</translation></message>
+    <message><source>Continuous auto-labeling progress</source><translation>连续自动标注进度</translation></message>
+    <message><source>Preparing</source><translation>正在准备</translation></message>
+    <message><source>Configured dwell time</source><translation>设定停留时间</translation></message>
+    <message><source>Remaining dwell time</source><translation>剩余停留时间</translation></message>
+    <message><source>Workset total</source><translation>工作集总数</translation></message>
+    <message><source>Selected by range</source><translation>范围内选中</translation></message>
+    <message><source>Eligible for inference</source><translation>可执行推理</translation></message>
+    <message><source>Safely saved</source><translation>已安全保存</translation></message>
+    <message><source>Succeeded</source><translation>成功</translation></message>
+    <message><source>Zero target</source><translation>零目标</translation></message>
+    <message><source>Skipped existing</source><translation>跳过已有标注</translation></message>
+    <message><source>Skipped outside range</source><translation>跳过范围外图片</translation></message>
+    <message><source>Host preparation failed</source><translation>宿主准备失败</translation></message>
+    <message><source>Failed input</source><translation>输入失败</translation></message>
+    <message><source>Unresolved model failures</source><translation>未解决的模型失败</translation></message>
+    <message><source>Explicit error skips</source><translation>明确跳过的错误</translation></message>
+    <message><source>Conflicts</source><translation>冲突</translation></message>
+    <message><source>Pending review</source><translation>待审计</translation></message>
+    <message><source>Pending review {count}</source><translation>待审核 {count}</translation></message>
+    <message><source>Labels</source><translation>标签</translation></message>
+    <message><source>Auto labeling</source><translation>自动标注</translation></message>
+    <message><source>Review ({count})</source><translation>审核 ({count})</translation></message>
+    <message><source>No pending image in this session.</source><translation>当前 Session 没有待审核图片。</translation></message>
+    <message><source>Remaining</source><translation>剩余</translation></message>
+    <message><source>Processing status</source><translation>处理状态</translation></message>
+    <message><source>Completed with errors</source><translation>完成但存在错误</translation></message>
+    <message><source>Pause and edit</source><translation>暂停并编辑</translation></message>
+    <message><source>Finish the current image safely, then unlock drawing and saving.</source><translation>当前图片安全保存完成后，解锁绘制和保存。</translation></message>
+    <message><source>Stop</source><translation>停止</translation></message>
+    <message><source>Retry current image</source><translation>重试当前图片</translation></message>
+    <message><source>Skip current image</source><translation>跳过当前图片</translation></message>
+    <message><source>Review now</source><translation>立即审计</translation></message>
+    <message><source>Review later</source><translation>稍后审计</translation></message>
+    <message><source>Preparing the image</source><translation>正在准备图片</translation></message>
+    <message><source>Running inference</source><translation>正在推理</translation></message>
+    <message><source>Saving safely</source><translation>正在安全保存</translation></message>
+    <message><source>Saved result displayed</source><translation>已显示保存结果</translation></message>
+    <message><source>Waiting for error resolution</source><translation>等待处理错误</translation></message>
+    <message><source>Paused - editing enabled</source><translation>已暂停 - 可编辑</translation></message>
+    <message><source>Paused</source><translation>已暂停</translation></message>
+    <message><source>Pausing safely after the current image is saved...</source><translation>正在安全暂停，等待当前图片保存完成...</translation></message>
+    <message><source>Run finished</source><translation>运行已结束</translation></message>
+    <message><source>Continue</source><translation>继续</translation></message>
+    <message><source>Paused - editing enabled ({remaining:.1f} s remaining)</source><translation>已暂停 - 可编辑（剩余 {remaining:.1f} 秒）</translation></message>
+    <message><source>Nothing to process</source><translation>无需处理</translation></message>
+    <message><source>Run result: {status}</source><translation>运行结果：{status}</translation></message>
+    <message><source>Close</source><translation>关闭</translation></message>
+    <message><source>Start continuous auto-labeling</source><translation>开始连续自动标注</translation></message>
+    <message><source>The current image has unsaved changes.</source><translation>当前图片有未保存的更改。</translation></message>
+    <message><source>Continue continuous auto-labeling</source><translation>继续连续自动标注</translation></message>
+    <message><source>Stop continuous auto-labeling</source><translation>停止连续自动标注</translation></message>
+    <message><source>Cannot continue continuous auto-labeling</source><translation>无法继续连续自动标注</translation></message>
+    <message><source>Cannot start continuous auto-labeling</source><translation>无法开始连续自动标注</translation></message>
+    <message><source>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</source><translation>快速模式使用 0.0 秒延迟，且不会逐图切换主画布。</translation></message>
+    <message><source>Continuous auto-labeling is already running.</source><translation>连续自动标注已在运行。</translation></message>
+    <message><source>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</source><translation>旧版批处理：此模型不支持快速或可视连续自动标注。旧版批处理不会创建统一审计队列。</translation></message>
+    <message><source>Fast/Visible continuous auto-labeling is unavailable. Legacy Batch was not started automatically.</source><translation>快速/可视连续自动标注不可用，未自动启动旧版批处理。</translation></message>
+    <message><source>Continuous auto-labeling audit</source><translation>连续自动标注审计</translation></message>
+    <message><source>Previous</source><translation>上一张</translation></message>
+    <message><source>Next pending review</source><translation>下一张待审计图片</translation></message>
+    <message><source>Mark needs fix</source><translation>标记为需要修正</translation></message>
+    <message><source>Save, approve, and next</source><translation>保存、通过并下一张</translation></message>
+    <message><source>Approve and next</source><translation>通过并下一张</translation></message>
+    <message><source>Finish audit</source><translation>结束审计</translation></message>
+    <message><source>{filename}  |  image_id={image_id}  |  #{sequence}</source><translation>{filename}  |  image_id={image_id}  |  #{sequence}</translation></message>
+    <message><source>Review status: {status}  |  dirty={dirty}</source><translation>审计状态：{status}  |  未保存更改={dirty}</translation></message>
+    <message><source>staged={staged}  |  source={source}  |  target_count={target_count}  |  zero_target={zero_target}</source><translation>Session={staged}  |  源标签={source}  |  目标数={target_count}  |  零目标={zero_target}</translation></message>
+    <message><source>Session approved {staged_approved}  |  source approved {source_approved}  |  needs fix {needs_fix}  |  pending {pending}  |  stale {stale}</source><translation>Session 已通过 {staged_approved}  |  源标签已通过 {source_approved}  |  需要修正 {needs_fix}  |  待审计 {pending}  |  已失效 {stale}</translation></message>
+    <message><source>Audit action failed</source><translation>审计操作失败</translation></message>
+    <message><source>Unsaved annotation</source><translation>标注尚未保存</translation></message>
+    <message><source>Save or discard the current changes before switching review images.</source><translation>切换审核图片前，请保存或放弃当前更改。</translation></message>
+    <message><source>Not applicable</source><translation>不适用</translation></message>
+    <message><source>Pending</source><translation>待处理</translation></message>
+    <message><source>Staged approved</source><translation>Session 已通过</translation></message>
+    <message><source>Approved</source><translation>源标签已通过</translation></message>
+    <message><source>Needs fix</source><translation>需要修正</translation></message>
+    <message><source>Stale</source><translation>已失效</translation></message>
+    <message><source>Conflict</source><translation>冲突</translation></message>
+    <message><source>None</source><translation>无</translation></message>
+    <message><source>Prepared</source><translation>已准备</translation></message>
+    <message><source>Committed</source><translation>已提交</translation></message>
+    <message><source>Abandoned</source><translation>已放弃</translation></message>
+    <message><source>Queued</source><translation>排队中</translation></message>
+    <message><source>Running</source><translation>运行中</translation></message>
+    <message><source>Skipped</source><translation>已跳过</translation></message>
+    <message><source>Failed</source><translation>失败</translation></message>
+    <message><source>Completed</source><translation>已完成</translation></message>
+    <message><source>Partial</source><translation>部分完成</translation></message>
+    <message><source>Cancelled</source><translation>已取消</translation></message>
+    <message><source>Recovery required</source><translation>需要恢复</translation></message>
+    <message><source>Archived</source><translation>已归档</translation></message>
+    <message><source>Not started</source><translation>未开始</translation></message>
+    <message><source>In progress</source><translation>进行中</translation></message>
+    <message><source>Yes</source><translation>是</translation></message>
+    <message><source>No</source><translation>否</translation></message>
+    <message><source>Failure</source><translation>失败</translation></message>
+    <message><source>Reconciliation pending</source><translation>等待对账</translation></message>
+    <message><source>Annotation integrity refresh required</source><translation>需要刷新标注完整性</translation></message>
 </context>
 </TS>

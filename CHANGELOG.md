@@ -1,11 +1,30 @@
 # X-AnyLabeling Changelog
 
+## Unreleased
+
+### New Features
+
+- Add Unified continuous auto-labeling for verified detection and pose
+  models, with Fast and Visible execution sharing the same crash-safe commit
+  and audit workflow.
+- Add immediate and resumed review workflows with explicit
+  `staged_approved`, source-backed `approved`, needs-fix, and stale states.
+
+### Compatibility
+
+- Segmentation, OBB, tracking, video, interactive, remote, and unverified
+  model families remain on Legacy Batch; it does not create a unified audit queue.
+
 ## `v3.3.7` (Jan 25, 2026)
 
 ### 🚀 New Features
 
 - Add automatic skip detection support for batch processing mode in PPOCR models (#687)
 - Introduce Compare View feature for side-by-side image comparison, enhancing usability for tasks such as infrared/visible fusion, mask preview, and super-resolution (#1269)
+
+### 🛠️ Improvements
+
+- Place shape labels outside bounding boxes with boundary-aware fallback to improve small-object inspection.
 
 ### 🌟 Contributors
 

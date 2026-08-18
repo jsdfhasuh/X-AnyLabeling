@@ -13,6 +13,17 @@ from PyQt5 import QtGui
 from ...labeling.logger import logger
 
 
+def decode_image_for_labeling(image_data):
+    """Decode image bytes with the same Qt path used by the labeling canvas."""
+
+    if type(image_data) not in {bytes, bytearray}:
+        raise TypeError("image_data must be bytes")
+    image = QtGui.QImage.fromData(bytes(image_data))
+    if image.isNull():
+        raise ValueError("failed_input")
+    return image
+
+
 def img_data_to_pil(img_data):
     f = io.BytesIO()
     f.write(img_data)

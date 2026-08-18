@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import os.path as osp
 
@@ -12,6 +13,9 @@ from .label_converter import LabelConverter
 from .logger import logger
 from .schema import XLABEL_BASIC_FIELDS, create_xlabel_template
 from .shape import Shape
+from .utils.auto_labeling_commit import (
+    atomic_write_label_document,
+)
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 
@@ -140,6 +144,9 @@ class LabelFile:
         image_data=None,
         other_data=None,
         flags=None,
+        pre_document_digest=None,
+        before_write=None,
+        image_source_path=None,
     ):
         if image_data is not None:
             image_data = base64.b64encode(image_data).decode("utf-8")
@@ -151,7 +158,10 @@ class LabelFile:
             other_data = {}
         if flags is None:
             flags = {}
-        for i, shape in enumerate(shapes):
+        safe_shapes = copy.deepcopy(shapes or [])
+        safe_other_data = copy.deepcopy(other_data)
+        safe_flags = copy.deepcopy(flags)
+        for i, shape in enumerate(safe_shapes):
             if shape["shape_type"] == "rectangle":
                 sorted_box = LabelConverter.calculate_bounding_box(
                     shape["points"]
@@ -163,23 +173,33 @@ class LabelFile:
                     [xmax, ymax],
                     [xmin, ymax],
                 ]
-                shapes[i] = shape
+                safe_shapes[i] = shape
 
         data = create_xlabel_template(
-            flags=flags,
-            shapes=shapes,
+            flags=safe_flags,
+            shapes=safe_shapes,
             image_path=image_path,
             image_data=image_data,
             image_height=image_height,
             image_width=image_width,
         )
 
-        for key, value in other_data.items():
-            assert key not in data
+        for key, value in safe_other_data.items():
+            if key in data:
+                raise LabelFileError(f"other_data field collision: {key}")
             data[key] = value
         try:
-            with utils.io_open(filename, "w") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            result = atomic_write_label_document(
+                filename,
+                data,
+                pre_document_digest=pre_document_digest,
+                allowed_root=osp.dirname(osp.abspath(filename)),
+                image_source_path=image_source_path,
+                before_write=before_write,
+            )
             self.filename = filename
+            self.document_digest = result.document_digest
+            self.semantic_digest = result.semantic_digest
+            return result
         except Exception as e:  # noqa
             raise LabelFileError(e) from e

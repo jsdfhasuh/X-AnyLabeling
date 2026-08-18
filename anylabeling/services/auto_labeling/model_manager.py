@@ -1,17 +1,28 @@
 import os
 import copy
+import math
 import time
+import uuid
 import yaml
 import importlib.resources as pkg_resources
 from threading import Lock
 
-from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QObject, QThread, QTimer, pyqtSignal, pyqtSlot
 
 import anylabeling.configs as auto_labeling_configs
 from anylabeling.utils import GenericWorker
 from anylabeling.views.labeling.logger import logger
 from anylabeling.config import get_config, save_config
 from anylabeling.services.auto_labeling.types import AutoLabelingResult
+from anylabeling.services.auto_labeling.inference_lease import (
+    InferenceLeaseRegistry,
+)
+from anylabeling.services.auto_labeling.prediction_job import (
+    AutoLabelingPayload,
+    PredictionOutcome,
+    PredictionRequest,
+    normalize_auto_labeling_result,
+)
 from anylabeling.services.auto_labeling.utils import TimeoutContext
 from anylabeling.services.auto_labeling import (
     _CUSTOM_MODELS,
@@ -29,6 +40,38 @@ from anylabeling.services.auto_labeling import (
 )
 
 
+class PredictionParameterSnapshotError(RuntimeError):
+    def __init__(self, code, detail=""):
+        self.code = code
+        self.detail = str(detail or "")
+        super().__init__(code if not self.detail else f"{code}: {self.detail}")
+
+
+def _snapshot_number(parameters, field, *, unit_interval=False):
+    value = parameters.get(field)
+    if value is None:
+        return None
+    if (
+        type(value) not in {int, float}
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or (unit_interval and not 0.0 <= value <= 1.0)
+    ):
+        raise PredictionParameterSnapshotError(
+            "prediction_parameter_snapshot_invalid", field
+        )
+    return float(value)
+
+
+def _snapshot_bool(parameters, field):
+    value = parameters.get(field)
+    if value is not None and type(value) is not bool:
+        raise PredictionParameterSnapshotError(
+            "prediction_parameter_snapshot_invalid", field
+        )
+    return value
+
+
 class ModelManager(QObject):
     """Model manager"""
 
@@ -41,6 +84,8 @@ class ModelManager(QObject):
     auto_segmentation_model_unselected = pyqtSignal()
     prediction_started = pyqtSignal()
     prediction_finished = pyqtSignal()
+    safe_to_close = pyqtSignal(int)
+    _legacy_payload_ready = pyqtSignal(object)
     request_next_files_requested = pyqtSignal()
     output_modes_changed = pyqtSignal(dict, str)
 
@@ -54,9 +99,118 @@ class ModelManager(QObject):
         self.model_download_worker = None
         self.model_download_thread = None
         self.model_execution_thread = None
+        self.model_execution_worker = None
         self.model_execution_thread_lock = Lock()
+        self._model_execution_lease = None
+
+        self.inference_lease = InferenceLeaseRegistry()
+        self._shutdown_generation = 0
+        self._pending_shutdown_generation = None
+        self._safe_to_close_scheduled = None
+        self._model_load_generation = 0
+        self._legacy_payload_ready.connect(
+            self.deliver_auto_labeling_payload, Qt.QueuedConnection
+        )
 
         self.load_model_configs()
+
+    @staticmethod
+    def _thread_is_running(thread):
+        return thread is not None and thread.isRunning()
+
+    @property
+    def download_active(self):
+        return self._thread_is_running(self.model_download_thread)
+
+    @property
+    def shutdown_pending(self):
+        return self._pending_shutdown_generation is not None
+
+    def _emit_inference_busy(self):
+        self.new_model_status.emit(
+            self.tr(
+                "Another model is being executed."
+                " Please wait for it to finish."
+            )
+        )
+
+    def acquire_inference_lease(self, owner_kind, owner_id):
+        """Acquire the instance lease only when model execution is allowed."""
+
+        if self.shutdown_pending:
+            self.new_model_status.emit(
+                self.tr("Prediction is disabled while closing safely.")
+            )
+            return None
+        if self.download_active:
+            self.new_model_status.emit(
+                self.tr(
+                    "Another model is being loaded."
+                    " Please wait for it to finish."
+                )
+            )
+            return None
+        token = self.inference_lease.acquire(owner_kind, owner_id)
+        if token is None:
+            self._emit_inference_busy()
+        return token
+
+    def _model_mutation_blocked(self):
+        if self.inference_lease.is_active:
+            self._emit_inference_busy()
+            return True
+        if self.shutdown_pending:
+            self.new_model_status.emit(
+                self.tr("Model changes are disabled while closing safely.")
+            )
+            return True
+        if self.download_active:
+            self.new_model_status.emit(
+                self.tr(
+                    "Another model is being loaded."
+                    " Please wait for it to finish."
+                )
+            )
+            return True
+        return False
+
+    def request_safe_shutdown(self, _reason):
+        """Stop accepting model work and report safety on a later GUI tick."""
+
+        self._shutdown_generation += 1
+        self._pending_shutdown_generation = self._shutdown_generation
+        self._maybe_emit_safe_to_close()
+        return self._shutdown_generation
+
+    def on_inference_idle(self):
+        """Re-evaluate a pending shutdown after worker cleanup."""
+
+        self._maybe_emit_safe_to_close()
+
+    def _maybe_emit_safe_to_close(self):
+        generation = self._pending_shutdown_generation
+        if generation is None:
+            return
+        if self.inference_lease.is_active or self.download_active:
+            return
+        if self._thread_is_running(self.model_execution_thread):
+            return
+        if self._safe_to_close_scheduled == generation:
+            return
+        self._safe_to_close_scheduled = generation
+
+        def emit_if_still_safe():
+            if self._safe_to_close_scheduled == generation:
+                self._safe_to_close_scheduled = None
+            if generation != self._pending_shutdown_generation:
+                return
+            if self.inference_lease.is_active or self.download_active:
+                return
+            if self._thread_is_running(self.model_execution_thread):
+                return
+            self.safe_to_close.emit(generation)
+
+        QTimer.singleShot(0, emit_if_still_safe)
 
     def load_model_configs(self):
         """Load model configs"""
@@ -152,9 +306,13 @@ class ModelManager(QObject):
         if self.loaded_model_config and self.loaded_model_config["model"]:
             self.loaded_model_config["model"].set_output_mode(mode)
 
-    @pyqtSlot()
-    def on_model_download_finished(self):
+    def on_model_download_finished(self, generation=None):
         """Handle model download thread finished"""
+        if (
+            generation is not None
+            and generation != self._model_load_generation
+        ):
+            return
         if self.loaded_model_config and self.loaded_model_config["model"]:
             self.new_model_status.emit(
                 self.tr("Model loaded. Ready for labeling.")
@@ -167,8 +325,22 @@ class ModelManager(QObject):
         else:
             self.model_loaded.emit({})
 
+    def _on_model_download_thread_finished(self, generation, thread, worker):
+        if (
+            generation == self._model_load_generation
+            and self.model_download_thread is thread
+            and self.model_download_worker is worker
+        ):
+            self.model_download_thread = None
+            self.model_download_worker = None
+        if thread is not None:
+            thread.deleteLater()
+        self._maybe_emit_safe_to_close()
+
     def load_custom_model(self, config_file):
         """Run custom model loading in a thread"""
+        if self._model_mutation_blocked():
+            return False
         config_file = os.path.normpath(os.path.abspath(config_file))
         if (
             self.model_download_thread is not None
@@ -196,7 +368,7 @@ class ModelManager(QObject):
             with open(config_file, "r", encoding="utf-8") as f:
                 model_config = yaml.safe_load(f)
                 model_config["config_file"] = os.path.abspath(config_file)
-        except Exception as e:
+        except Exception:
             logger.error(
                 "An error occurred while loading the custom model: "
                 "The config file is invalid."
@@ -269,12 +441,12 @@ class ModelManager(QObject):
         self.load_model_configs()
 
         # Load model
-        self.load_model(model_config["config_file"])
-
-        return True
+        return self.load_model(model_config["config_file"])
 
     def load_model(self, config_file):
         """Run model loading in a thread"""
+        if self._model_mutation_blocked():
+            return False
         if (
             self.model_download_thread is not None
             and self.model_download_thread.isRunning()
@@ -282,7 +454,9 @@ class ModelManager(QObject):
             logger.info(
                 "Another model is being loaded. Please wait for it to finish."
             )
-            return
+            return False
+        self._model_load_generation += 1
+        generation = self._model_load_generation
         if not config_file:
             if self.model_download_worker is not None:
                 try:
@@ -293,7 +467,7 @@ class ModelManager(QObject):
                     pass
             self.unload_model()
             self.new_model_status.emit(self.tr("No model selected."))
-            return
+            return True
 
         # Check and get model id
         model_id = None
@@ -309,9 +483,9 @@ class ModelManager(QObject):
             self.new_model_status.emit(
                 self.tr("Error in loading model: Invalid model name.")
             )
-            return
+            return False
 
-        self.model_download_thread = QThread()
+        thread = QThread()
         template = "Loading model: {model_name}. Please wait..."
         translated_template = self.tr(template)
         message = translated_template.format(
@@ -319,18 +493,23 @@ class ModelManager(QObject):
         )
         self.new_model_status.emit(message)
 
-        self.model_download_worker = GenericWorker(self._load_model, model_id)
-        self.model_download_worker.finished.connect(
-            self.on_model_download_finished
+        worker = GenericWorker(self._load_model, model_id)
+        self.model_download_thread = thread
+        self.model_download_worker = worker
+        worker.finished.connect(
+            lambda: self.on_model_download_finished(generation)
         )
-        self.model_download_worker.finished.connect(
-            self.model_download_thread.quit
+        worker.finished.connect(thread.quit)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(
+            lambda: self._on_model_download_thread_finished(
+                generation, thread, worker
+            )
         )
-        self.model_download_worker.moveToThread(self.model_download_thread)
-        self.model_download_thread.started.connect(
-            self.model_download_worker.run
-        )
-        self.model_download_thread.start()
+        thread.start()
+        return True
 
     def _load_model(self, model_id):  # noqa: C901
         """Load and return model info"""
@@ -2052,9 +2231,202 @@ class ModelManager(QObject):
 
     def unload_model(self):
         """Unload model"""
+        if self._model_mutation_blocked():
+            return False
         if self.loaded_model_config is not None:
             self.loaded_model_config["model"].unload()
             self.loaded_model_config = None
+        return True
+
+    @staticmethod
+    def _payload_to_legacy_result(payload):
+        if not isinstance(payload, AutoLabelingPayload):
+            raise TypeError("prediction_payload_invalid")
+        from anylabeling.views.labeling.shape import Shape
+
+        shapes = [Shape().load_from_dict(shape) for shape in payload.shapes]
+        return AutoLabelingResult(
+            shapes=shapes,
+            replace=payload.replace,
+            description=payload.description,
+        )
+
+    def deliver_auto_labeling_payload(self, payload):
+        """Restore a plain payload only at the legacy canvas boundary."""
+
+        result = self._payload_to_legacy_result(payload)
+        self.new_auto_labeling_result.emit(result)
+        return result
+
+    def _predict_payload_unleased(
+        self,
+        lease_token,
+        image,
+        filename=None,
+        text_prompt=None,
+        run_tracker=False,
+        existing_shapes=None,
+    ):
+        """Execute and normalize one model call under an existing lease."""
+
+        if not self.inference_lease.is_active_token(lease_token):
+            raise RuntimeError("inference_lease_invalid")
+        if self.loaded_model_config is None:
+            raise RuntimeError("prediction_model_not_loaded")
+        model = self.loaded_model_config.get("model")
+        if model is None:
+            raise RuntimeError("prediction_model_not_loaded")
+
+        if text_prompt is not None:
+            result = model.predict_shapes(
+                image, filename, text_prompt=text_prompt
+            )
+        elif run_tracker is True:
+            result = model.predict_shapes(
+                image, filename, run_tracker=run_tracker
+            )
+        elif existing_shapes is not None:
+            result = model.predict_shapes(
+                image, filename, existing_shapes=existing_shapes
+            )
+        else:
+            result = model.predict_shapes(image, filename)
+        return normalize_auto_labeling_result(result)
+
+    def execute_prediction_request_unleased(self, request, lease_token):
+        """Decode one request and produce a structured RETURN_ONLY outcome."""
+
+        if not isinstance(request, PredictionRequest):
+            raise TypeError("prediction_request_invalid")
+        if not self.inference_lease.is_active_token(lease_token):
+            raise RuntimeError("inference_lease_invalid")
+
+        from anylabeling.views.labeling.shape import Shape
+        from anylabeling.views.labeling.utils.auto_labeling_commit import (
+            AutoLabelingCommitError,
+            decode_image_input_snapshot_v1,
+        )
+        from anylabeling.views.labeling.utils.opencv import (
+            ImageInputSnapshotPath,
+        )
+
+        parameters = request.parameter_snapshot
+        try:
+            self._apply_frozen_prediction_parameters(parameters)
+            snapshot = decode_image_input_snapshot_v1(
+                image_id=request.image_id,
+                requested_path=request.canonical_image_path,
+                source=parameters.get(
+                    "image_input_source", "STANDALONE_FILE_LIST"
+                ),
+                expected_sha256=parameters.get(
+                    "expected_sha256",
+                    parameters.get("expected_image_sha256"),
+                ),
+                session_images_root=parameters.get("session_images_root"),
+            )
+            existing_shapes = None
+            if request.existing_shapes_input:
+                existing_shapes = [
+                    Shape().load_from_dict(shape)
+                    for shape in request.existing_shapes_input
+                ]
+            payload = self._predict_payload_unleased(
+                lease_token,
+                snapshot.to_qimage(),
+                ImageInputSnapshotPath(request.canonical_image_path),
+                text_prompt=parameters.get("text_prompt"),
+                run_tracker=parameters.get("run_tracker", False),
+                existing_shapes=existing_shapes,
+            )
+            payload = AutoLabelingPayload(
+                shapes=payload.shapes,
+                replace=payload.replace,
+                description=payload.description,
+                input_width=snapshot.decoded_width,
+                input_height=snapshot.decoded_height,
+                source_image_digest=snapshot.actual_sha256,
+            )
+            return PredictionOutcome.succeeded(request, payload)
+        except (
+            AutoLabelingCommitError,
+            PredictionParameterSnapshotError,
+        ) as exc:
+            return PredictionOutcome.failed(request, exc.code, str(exc))
+        except Exception as exc:  # noqa
+            return PredictionOutcome.failed(
+                request,
+                "model_prediction_failed",
+                str(exc) or type(exc).__name__,
+            )
+
+    def _apply_frozen_prediction_parameters(self, parameters):
+        """Apply the Phase 4 request snapshot to the verified model adapter."""
+
+        expected_type = parameters.get("model_type")
+        if expected_type is None:
+            return
+        config = self.loaded_model_config
+        if type(config) is not dict or config.get("model") is None:
+            raise PredictionParameterSnapshotError(
+                "prediction_model_not_loaded"
+            )
+        if config.get("type") != expected_type:
+            raise PredictionParameterSnapshotError(
+                "prediction_model_changed",
+                f"expected {expected_type}, got {config.get('type')}",
+            )
+        model = config["model"]
+
+        for field, attribute in (
+            ("confidence_threshold", "conf_thres"),
+            ("iou_threshold", "iou_thres"),
+            ("keypoint_threshold", "kpt_thres"),
+        ):
+            value = _snapshot_number(parameters, field, unit_interval=True)
+            if value is None:
+                continue
+            setattr(model, attribute, value)
+
+        output_mode = parameters.get("output_mode")
+        if output_mode is not None:
+            if type(output_mode) is not str or not output_mode:
+                raise PredictionParameterSnapshotError(
+                    "prediction_parameter_snapshot_invalid", "output_mode"
+                )
+            output_modes = getattr(
+                getattr(model, "Meta", None), "output_modes", None
+            )
+            if type(output_modes) is dict and output_mode not in output_modes:
+                raise PredictionParameterSnapshotError(
+                    "prediction_parameter_snapshot_invalid", "output_mode"
+                )
+            model.set_output_mode(output_mode)
+
+        preserve = _snapshot_bool(parameters, "preserve_existing_annotations")
+        replace = _snapshot_bool(parameters, "replace")
+        if preserve is not None:
+            intended_replace = not preserve
+            if replace is not None and replace != intended_replace:
+                raise PredictionParameterSnapshotError(
+                    "prediction_parameter_snapshot_invalid",
+                    "preserve_existing_annotations/replace",
+                )
+            replace = intended_replace
+        if replace is not None:
+            model.replace = replace
+
+        _snapshot_bool(parameters, "skip_detection")
+        cropping_mode = _snapshot_bool(parameters, "cropping_mode")
+        mask_fineness = _snapshot_number(parameters, "mask_fineness")
+        if cropping_mode is not None:
+            setter = getattr(model, "set_cropping_mode", None)
+            if callable(setter):
+                setter(cropping_mode)
+        if mask_fineness is not None:
+            setter = getattr(model, "set_mask_fineness", None)
+            if callable(setter):
+                setter(mask_fineness)
 
     def predict_shapes(
         self,
@@ -2064,6 +2436,7 @@ class ModelManager(QObject):
         run_tracker=False,
         batch=False,
         existing_shapes=None,
+        lease_token=None,
     ):
         """Predict shapes.
         NOTE: This function is blocking. The model can take a long time to
@@ -2073,28 +2446,39 @@ class ModelManager(QObject):
             self.new_model_status.emit(
                 self.tr("Model is not loaded. Choose a mode to continue.")
             )
-            self.prediction_finished.emit()
-            return
+            if not batch:
+                self.prediction_finished.emit()
+            return False
+
+        owns_lease = lease_token is None
+        if owns_lease:
+            owner_kind = (
+                "LEGACY_AUTO_RUN"
+                if batch
+                else (
+                    "LEGACY_VL_RUN"
+                    if text_prompt is not None
+                    else "LEGACY_SINGLE"
+                )
+            )
+            lease_token = self.acquire_inference_lease(
+                owner_kind, str(uuid.uuid4())
+            )
+            if lease_token is None:
+                return False
+        elif not self.inference_lease.is_active_token(lease_token):
+            raise RuntimeError("inference_lease_invalid")
 
         try:
-            if text_prompt is not None:
-                auto_labeling_result = self.loaded_model_config[
-                    "model"
-                ].predict_shapes(image, filename, text_prompt=text_prompt)
-            elif run_tracker is True:
-                auto_labeling_result = self.loaded_model_config[
-                    "model"
-                ].predict_shapes(image, filename, run_tracker=run_tracker)
-            elif existing_shapes is not None:
-                auto_labeling_result = self.loaded_model_config[
-                    "model"
-                ].predict_shapes(
-                    image, filename, existing_shapes=existing_shapes
-                )
-            else:
-                auto_labeling_result = self.loaded_model_config[
-                    "model"
-                ].predict_shapes(image, filename)
+            payload = self._predict_payload_unleased(
+                lease_token,
+                image,
+                filename,
+                text_prompt=text_prompt,
+                run_tracker=run_tracker,
+                existing_shapes=existing_shapes,
+            )
+            auto_labeling_result = self._payload_to_legacy_result(payload)
 
             if batch:
                 return auto_labeling_result
@@ -2103,14 +2487,66 @@ class ModelManager(QObject):
                 self.new_model_status.emit(
                     self.tr("Finished inferencing AI model. Check the result.")
                 )
+                return True
 
         except Exception as e:  # noqa
-            logger.error(f"Error in predict_shapes: {e}")
+            logger.exception(f"Error in predict_shapes: {e}")
             template = "Error in model prediction: {error_message}"
             translated_template = self.tr(template)
             error_text = translated_template.format(error_message=str(e))
             self.new_model_status.emit(error_text)
+            if batch:
+                raise
+            return False
+        finally:
+            if owns_lease and lease_token is not None:
+                lease_token.release()
+                self.on_inference_idle()
+            if not batch:
+                self.prediction_finished.emit()
 
+    def _run_legacy_prediction(
+        self,
+        lease_token,
+        image,
+        filename=None,
+        text_prompt=None,
+        run_tracker=False,
+        existing_shapes=None,
+    ):
+        try:
+            payload = self._predict_payload_unleased(
+                lease_token,
+                image,
+                filename,
+                text_prompt=text_prompt,
+                run_tracker=run_tracker,
+                existing_shapes=existing_shapes,
+            )
+            self._legacy_payload_ready.emit(payload)
+            self.new_model_status.emit(
+                self.tr("Finished inferencing AI model. Check the result.")
+            )
+        except Exception as exc:  # noqa
+            logger.exception(f"Error in predict_shapes: {exc}")
+            template = "Error in model prediction: {error_message}"
+            translated_template = self.tr(template)
+            self.new_model_status.emit(
+                translated_template.format(error_message=str(exc))
+            )
+
+    @pyqtSlot()
+    def _on_model_execution_thread_finished(self):
+        thread = self.model_execution_thread
+        lease_token = self._model_execution_lease
+        self.model_execution_thread = None
+        self.model_execution_worker = None
+        self._model_execution_lease = None
+        if thread is not None:
+            thread.deleteLater()
+        if lease_token is not None:
+            lease_token.release()
+        self.on_inference_idle()
         self.prediction_finished.emit()
 
     @pyqtSlot()
@@ -2129,52 +2565,28 @@ class ModelManager(QObject):
             self.new_model_status.emit(
                 self.tr("Model is not loaded. Choose a mode to continue.")
             )
-            return
-        self.new_model_status.emit(
-            self.tr("Inferencing AI model. Please wait...")
-        )
-        self.prediction_started.emit()
-
+            return False
         with self.model_execution_thread_lock:
-            if (
-                self.model_execution_thread is not None
-                and self.model_execution_thread.isRunning()
-            ):
-                self.new_model_status.emit(
-                    self.tr(
-                        "Another model is being executed."
-                        " Please wait for it to finish."
-                    )
-                )
-                self.prediction_finished.emit()
-                return
+            owner_kind = (
+                "LEGACY_VL_RUN" if text_prompt is not None else "LEGACY_SINGLE"
+            )
+            lease_token = self.acquire_inference_lease(
+                owner_kind, str(uuid.uuid4())
+            )
+            if lease_token is None:
+                return False
 
             self.model_execution_thread = QThread()
-            if text_prompt is not None:
-                self.model_execution_worker = GenericWorker(
-                    self.predict_shapes,
-                    image,
-                    filename,
-                    text_prompt=text_prompt,
-                )
-            elif run_tracker is True:
-                self.model_execution_worker = GenericWorker(
-                    self.predict_shapes,
-                    image,
-                    filename,
-                    run_tracker=run_tracker,
-                )
-            elif existing_shapes is not None:
-                self.model_execution_worker = GenericWorker(
-                    self.predict_shapes,
-                    image,
-                    filename,
-                    existing_shapes=existing_shapes,
-                )
-            else:
-                self.model_execution_worker = GenericWorker(
-                    self.predict_shapes, image, filename
-                )
+            self._model_execution_lease = lease_token
+            self.model_execution_worker = GenericWorker(
+                self._run_legacy_prediction,
+                lease_token,
+                image,
+                filename,
+                text_prompt=text_prompt,
+                run_tracker=run_tracker,
+                existing_shapes=existing_shapes,
+            )
             self.model_execution_worker.finished.connect(
                 self.model_execution_thread.quit
             )
@@ -2184,7 +2596,18 @@ class ModelManager(QObject):
             self.model_execution_thread.started.connect(
                 self.model_execution_worker.run
             )
+            self.model_execution_thread.finished.connect(
+                self.model_execution_worker.deleteLater
+            )
+            self.model_execution_thread.finished.connect(
+                self._on_model_execution_thread_finished
+            )
+            self.new_model_status.emit(
+                self.tr("Inferencing AI model. Please wait...")
+            )
+            self.prediction_started.emit()
             self.model_execution_thread.start()
+            return True
 
     def on_next_files_changed(self, next_files):
         """Run prediction on next files in advance to save inference time later"""
@@ -2227,11 +2650,15 @@ class ModelManager(QObject):
 
     def set_remote_server_model(self, model_id):
         """Set remote server model ID"""
+        if self._model_mutation_blocked():
+            return False
         if self.loaded_model_config is None:
-            return
+            return False
 
         if self.loaded_model_config["type"] == "remote_server":
             self.loaded_model_config["model"].set_model_id(model_id)
+            return True
+        return False
 
     def get_remote_server_available_models(self):
         """Get available models from remote server"""
@@ -2253,11 +2680,15 @@ class ModelManager(QObject):
 
     def set_task(self, task_id):
         """Set task ID for the current model"""
+        if self._model_mutation_blocked():
+            return False
         if self.loaded_model_config is None:
-            return
+            return False
 
         if self.loaded_model_config["type"] == "remote_server":
             self.loaded_model_config["model"].set_task(task_id)
+            return True
+        return False
 
     def set_mask_fineness(self, epsilon):
         """Set mask fineness (epsilon value for Douglas-Peucker algorithm)"""

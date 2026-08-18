@@ -44,12 +44,24 @@ from . import utils
 from ...config import get_config, save_config
 from .label_file import LabelFile, LabelFileError
 from .logger import logger
+from . import pose_config as pose_config_utils
 from .shape import Shape
 from .utils.file_search import (
     parse_search_pattern,
     matches_filename,
     matches_label_attribute,
 )
+from .utils.auto_labeling_host import (
+    clear_auto_labeling_host_context as clear_global_auto_labeling_host_context,
+    get_auto_labeling_host_context,
+    set_auto_labeling_host_context as set_global_auto_labeling_host_context,
+    validate_auto_labeling_host_context,
+)
+from .utils.auto_labeling_commit_bridge import (
+    AnnotationCommitBridgeError,
+    AnnotationCommitBridgeV1,
+)
+from .utils.auto_labeling_i18n import auto_labeling_text_v1
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -97,6 +109,7 @@ class LabelingWidget(LabelDialog):
         output=None,
         output_file=None,
         output_dir=None,
+        pose_config_path=None,
     ):
         self.parent = parent
         if output is not None:
@@ -122,6 +135,10 @@ class LabelingWidget(LabelDialog):
         self.fn_to_index = {}
         self.cache_auto_label = None
         self.cache_auto_label_group_id = None
+        self.pose_config_path = pose_config_path
+        self.pose_config = None
+        self.pending_pose_class = None
+        self.auto_labeling_host_context = get_auto_labeling_host_context()
 
         # see configs/anylabeling_config.yaml for valid configuration
         if config is None:
@@ -155,9 +172,26 @@ class LabelingWidget(LabelDialog):
         Shape.line_width = self._config["shape"]["line_width"]
 
         super(LabelDialog, self).__init__()
+        self.pose_config = self._load_pose_config(pose_config_path)
 
         # Whether we need to save or not.
         self.dirty = False
+        self._loaded_label_path = None
+        self._loaded_label_document_digest = None
+        self.auto_labeling_commit_blocked = False
+        self.auto_labeling_commit_error = None
+        self._standalone_auto_labeling_audit_client = None
+        self._auto_labeling_audit_session = None
+        self._session_pending_review_count = 0
+        self._historical_pending_review_count = int(
+            getattr(
+                self.auto_labeling_host_context,
+                "historical_pending_review_count",
+                0,
+            )
+            or 0
+        )
+        self.annotation_commit_bridge = AnnotationCommitBridgeV1(self)
 
         self._no_selection_slot = False
         self._copied_shapes = None
@@ -299,6 +333,7 @@ class LabelingWidget(LabelDialog):
             rotation=self._config["canvas"].get("rotation", {}),
             mask=self._config["canvas"].get("mask", {}),
         )
+        self.canvas.set_pose_config(self.pose_config)
         self.canvas.zoom_request.connect(self.zoom_request)
 
         # Compare view support
@@ -572,6 +607,15 @@ class LabelingWidget(LabelDialog):
             self.tr("Start drawing rectangles"),
             enabled=False,
         )
+        create_pose_mode = action(
+            self.tr("Create Pose"),
+            self.create_pose_mode,
+            shortcuts.get("create_pose"),
+            "cartesian",
+            self.tr("Create pose keypoints from a bounding box"),
+            enabled=False,
+        )
+        create_pose_mode.setVisible(self.pose_config is not None)
         create_rotation_mode = action(
             self.tr("Create Rotation"),
             lambda: self.toggle_draw_mode(False, create_mode="rotation"),
@@ -1074,7 +1118,7 @@ class LabelingWidget(LabelDialog):
             self.tr("Show Labels"),
             lambda x: self.set_canvas_params("show_labels", x),
             shortcut=shortcuts["show_labels"],
-            tip=self.tr("Show label inside shapes"),
+            tip=self.tr("Show labels near shapes"),
             icon=None,
             checkable=True,
             checked=self._config["show_labels"],
@@ -1084,7 +1128,7 @@ class LabelingWidget(LabelDialog):
         show_scores = action(
             self.tr("Show Scores"),
             lambda x: self.set_canvas_params("show_scores", x),
-            tip=self.tr("Show score inside shapes"),
+            tip=self.tr("Show scores with labels"),
             icon=None,
             checkable=True,
             checked=self._config["show_scores"],
@@ -1531,6 +1575,7 @@ class LabelingWidget(LabelDialog):
             create_mode=create_mode,
             edit_mode=edit_mode,
             create_rectangle_mode=create_rectangle_mode,
+            create_pose_mode=create_pose_mode,
             create_rotation_mode=create_rotation_mode,
             create_circle_mode=create_circle_mode,
             create_line_mode=create_line_mode,
@@ -1649,6 +1694,7 @@ class LabelingWidget(LabelDialog):
             menu=(
                 create_mode,
                 create_rectangle_mode,
+                create_pose_mode,
                 create_rotation_mode,
                 create_circle_mode,
                 create_line_mode,
@@ -1670,6 +1716,7 @@ class LabelingWidget(LabelDialog):
                 close,
                 create_mode,
                 create_rectangle_mode,
+                create_pose_mode,
                 create_rotation_mode,
                 create_circle_mode,
                 create_line_mode,
@@ -1899,6 +1946,7 @@ class LabelingWidget(LabelDialog):
             None,
             create_mode,
             self.actions.create_rectangle_mode,
+            self.actions.create_pose_mode,
             self.actions.create_rotation_mode,
             self.actions.create_circle_mode,
             self.actions.create_line_mode,
@@ -1930,6 +1978,11 @@ class LabelingWidget(LabelDialog):
         self.label_instruction = QLabel(self.get_labeling_instruction())
         self.label_instruction.setContentsMargins(0, 0, 0, 0)
         self.auto_labeling_widget = AutoLabelingWidget(self)
+        if self.auto_labeling_host_context is not None:
+            self.auto_labeling_widget.set_auto_labeling_host_context(
+                self.auto_labeling_host_context
+            )
+        self.auto_labeling_widget.hide()
         self.auto_labeling_widget.auto_segmentation_requested.connect(
             self.on_auto_segmentation_requested
         )
@@ -1995,7 +2048,6 @@ class LabelingWidget(LabelDialog):
         # self.auto_labeling_widget.model_manager.request_next_files_requested.connect(
         #     lambda: self.inform_next_files(self.filename)
         # )
-        self.auto_labeling_widget.hide()  # Hide by default
         central_layout.addWidget(self.label_instruction)
         central_layout.addSpacing(5)
         central_layout.addWidget(self.auto_labeling_widget)
@@ -2011,6 +2063,11 @@ class LabelingWidget(LabelDialog):
 
         right_sidebar_layout = QVBoxLayout()
         right_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_sidebar_tabs = QtWidgets.QTabWidget()
+        self.right_sidebar_tabs.setMinimumWidth(300)
+        self.labels_sidebar_page = QWidget()
+        labels_sidebar_layout = QVBoxLayout(self.labels_sidebar_page)
+        labels_sidebar_layout.setContentsMargins(0, 0, 0, 0)
 
         # Thumbnail image display
         self.thumbnail_pixmap = None
@@ -2025,7 +2082,7 @@ class LabelingWidget(LabelDialog):
         thumbnail_image_layout.addWidget(self.thumbnail_image_label)
         self.thumbnail_container.setLayout(thumbnail_image_layout)
         self.thumbnail_container.hide()
-        right_sidebar_layout.addWidget(self.thumbnail_container)
+        labels_sidebar_layout.addWidget(self.thumbnail_container)
 
         # Shape attributes
         self.shape_attributes = QLabel(self.tr("Attributes"))
@@ -2043,10 +2100,10 @@ class LabelingWidget(LabelDialog):
         if not self.attributes:
             self.shape_attributes.hide()
             self.scroll_area.hide()
-        right_sidebar_layout.addWidget(
+        labels_sidebar_layout.addWidget(
             self.shape_attributes, 0, Qt.AlignCenter
         )
-        right_sidebar_layout.addWidget(self.scroll_area)
+        labels_sidebar_layout.addWidget(self.scroll_area)
 
         # Shape text label with checkbox
         self.shape_text_label = QLabel("Object Text")
@@ -2066,9 +2123,9 @@ class LabelingWidget(LabelDialog):
         description_header_widget = QWidget()
         description_header_widget.setLayout(description_header_layout)
 
-        right_sidebar_layout.addWidget(description_header_widget)
-        right_sidebar_layout.addWidget(self.shape_text_edit)
-        right_sidebar_layout.addWidget(self.flag_dock)
+        labels_sidebar_layout.addWidget(description_header_widget)
+        labels_sidebar_layout.addWidget(self.shape_text_edit)
+        labels_sidebar_layout.addWidget(self.flag_dock)
 
         # Labels with checkbox
         self.labels_checkbox = QCheckBox()
@@ -2084,13 +2141,13 @@ class LabelingWidget(LabelDialog):
         labels_header_layout.addWidget(self.labels_checkbox)
         labels_header_widget = QWidget()
         labels_header_widget.setLayout(labels_header_layout)
-        right_sidebar_layout.addWidget(labels_header_widget)
+        labels_sidebar_layout.addWidget(labels_header_widget)
 
         # Hide the original dock title bar
         empty_widget = QWidget()
         empty_widget.setFixedHeight(0)
         self.label_dock.setTitleBarWidget(empty_widget)
-        right_sidebar_layout.addWidget(self.label_dock)
+        labels_sidebar_layout.addWidget(self.label_dock)
 
         # Create a horizontal layout for the filters and select button
         filter_layout = QHBoxLayout()
@@ -2099,9 +2156,9 @@ class LabelingWidget(LabelDialog):
         filter_layout.addWidget(self.label_filter_combobox, 2)
         filter_layout.addWidget(self.gid_filter_combobox, 1)
         filter_layout.addWidget(self.select_toggle_button, 0)
-        right_sidebar_layout.addLayout(filter_layout)
-        right_sidebar_layout.addWidget(self.shape_dock)
-        right_sidebar_layout.addWidget(self.file_dock)
+        labels_sidebar_layout.addLayout(filter_layout)
+        labels_sidebar_layout.addWidget(self.shape_dock)
+        labels_sidebar_layout.addWidget(self.file_dock)
         self.file_dock.setFeatures(QDockWidget.DockWidgetFloatable)
         dock_features = (
             ~QDockWidget.DockWidgetMovable
@@ -2123,6 +2180,31 @@ class LabelingWidget(LabelDialog):
         )
 
         self.shape_text_edit.textChanged.connect(self.shape_text_changed)
+
+        self.audit_sidebar_page = QWidget()
+        self.audit_sidebar_layout = QVBoxLayout(self.audit_sidebar_page)
+        self.audit_sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        self.audit_empty_label = QLabel(auto_labeling_text_v1("audit_empty"))
+        self.audit_empty_label.setWordWrap(True)
+        self.audit_empty_label.setAlignment(Qt.AlignCenter)
+        self.audit_open_button = QPushButton()
+        self.audit_open_button.clicked.connect(self.open_auto_labeling_review)
+        self.audit_sidebar_layout.addStretch(1)
+        self.audit_sidebar_layout.addWidget(self.audit_empty_label)
+        self.audit_sidebar_layout.addWidget(self.audit_open_button)
+        self.audit_sidebar_layout.addStretch(1)
+
+        self.right_sidebar_tabs.addTab(
+            self.labels_sidebar_page,
+            auto_labeling_text_v1("labels_tab"),
+        )
+        self.right_sidebar_tabs.addTab(self.audit_sidebar_page, "")
+        self.right_sidebar_tabs.setCurrentWidget(self.labels_sidebar_page)
+        self.right_sidebar_tabs.currentChanged.connect(
+            self._right_sidebar_tab_changed
+        )
+        right_sidebar_layout.addWidget(self.right_sidebar_tabs)
+        self._refresh_pending_review_controls()
 
         layout.addItem(right_sidebar_layout)
         self.setLayout(layout)
@@ -2255,6 +2337,149 @@ class LabelingWidget(LabelDialog):
         msg_box.exec_()
         self.parent.parent.close()
 
+    def _load_pose_config(self, pose_config_path):
+        if not pose_config_path:
+            return None
+        try:
+            pose_config = pose_config_utils.load_pose_config(pose_config_path)
+            logger.info(f"Loaded pose config: {pose_config_path}")
+            return pose_config
+        except Exception as exc:
+            logger.warning(f"Failed to load pose config: {exc}")
+            QMessageBox.warning(
+                self,
+                self.tr("Pose Config"),
+                self.tr(
+                    "Failed to load pose_config.yaml. "
+                    "Pose annotation is disabled, but normal annotation "
+                    "can continue."
+                )
+                + f"\n\n{exc}",
+                QMessageBox.Ok,
+            )
+            return None
+
+    def _sync_pose_action_state(self):
+        if not hasattr(self, "actions"):
+            return
+        action = getattr(self.actions, "create_pose_mode", None)
+        if action is None:
+            return
+        has_pose_config = self.pose_config is not None
+        action.setVisible(has_pose_config)
+        action.setEnabled(
+            has_pose_config
+            and self.image_path is not None
+            and self.pending_pose_class is None
+        )
+
+    def _clear_pose_mode(self):
+        self.pending_pose_class = None
+        if hasattr(self, "canvas"):
+            self.canvas.clear_pose_creation_class()
+        self._sync_pose_action_state()
+
+    def create_pose_mode(self):
+        if not self.pose_config:
+            return
+        pose_classes = pose_config_utils.class_names(self.pose_config)
+        if not pose_classes:
+            return
+        if len(pose_classes) == 1:
+            pose_class = pose_classes[0]
+        else:
+            pose_class, ok = QtWidgets.QInputDialog.getItem(
+                self,
+                self.tr("Create Pose"),
+                self.tr("Class:"),
+                pose_classes,
+                0,
+                False,
+            )
+            if not ok or not pose_class:
+                return
+
+        self.pending_pose_class = pose_class
+        self.canvas.set_pose_creation_class(pose_class)
+        self.toggle_draw_mode(False, create_mode="rectangle")
+        self._sync_pose_action_state()
+        self.status(
+            self.tr("Draw a bounding box for pose class: %s") % pose_class
+        )
+
+    @staticmethod
+    def _shape_from_pose_dict(shape_data):
+        shape = Shape(
+            label=shape_data["label"],
+            shape_type=shape_data["shape_type"],
+            flags=shape_data.get("flags", {}),
+            group_id=shape_data.get("group_id"),
+        )
+        for point in shape_data["points"]:
+            shape.add_point(QtCore.QPointF(point[0], point[1]))
+        shape.close()
+        return shape
+
+    def _finish_pose_shape(self, rectangle_shape):
+        pose_class = self.pending_pose_class
+        group_id = self.canvas.gen_new_group_id()
+        bbox_points = [
+            [point.x(), point.y()] for point in rectangle_shape.points
+        ]
+        shape_dicts = pose_config_utils.create_pose_shape_dicts(
+            self.pose_config, pose_class, bbox_points, group_id
+        )
+        rectangle_data = shape_dicts[0]
+        rectangle_shape.label = rectangle_data["label"]
+        rectangle_shape.group_id = group_id
+        rectangle_shape.flags = rectangle_data.get("flags", {})
+        rectangle_shape.points = [
+            QtCore.QPointF(point[0], point[1])
+            for point in rectangle_data["points"]
+        ]
+        rectangle_shape.close()
+
+        if self.canvas.shapes_backups:
+            self.canvas.shapes_backups.pop()
+        self.add_label(rectangle_shape)
+        for shape_data in shape_dicts[1:]:
+            point_shape = self._shape_from_pose_dict(shape_data)
+            self.canvas.shapes.append(point_shape)
+            self.add_label(point_shape, update_last_label=False)
+        self.canvas.store_shapes()
+        self.canvas.update()
+        self.actions.edit_mode.setEnabled(True)
+        self.actions.undo_last_point.setEnabled(False)
+        self.actions.undo.setEnabled(True)
+        self.set_dirty()
+        self.set_edit_mode()
+
+    def _pose_keypoints_for_selected_rectangles(self, selected_shapes):
+        if not self.pose_config:
+            return []
+        selected_set = set(selected_shapes)
+        keypoints = []
+        pose_classes = set(self.pose_config.get("classes") or {})
+        for shape in selected_shapes:
+            if shape.shape_type != "rectangle":
+                continue
+            if shape.group_id is None or shape.label not in pose_classes:
+                continue
+            keypoint_names = set(
+                self.pose_config.get("classes", {}).get(shape.label, [])
+            )
+            for candidate in self.canvas.shapes:
+                if candidate in selected_set:
+                    continue
+                if candidate.group_id != shape.group_id:
+                    continue
+                if (
+                    candidate.shape_type == "point"
+                    and candidate.label in keypoint_names
+                ):
+                    keypoints.append(candidate)
+        return keypoints
+
     def get_labeling_instruction(self):
         text_mode = self.tr("Mode:")
         text_shortcuts = self.tr("Shortcuts:")
@@ -2343,6 +2568,7 @@ class LabelingWidget(LabelDialog):
         actions = (
             self.actions.create_mode,
             self.actions.create_rectangle_mode,
+            self.actions.create_pose_mode,
             self.actions.create_rotation_mode,
             self.actions.create_circle_mode,
             self.actions.create_line_mode,
@@ -2371,7 +2597,11 @@ class LabelingWidget(LabelDialog):
             if self.output_dir:
                 label_file_without_path = osp.basename(label_file)
                 label_file = self.output_dir + "/" + label_file_without_path
-            self.save_labels(label_file)
+            if self.save_labels(label_file, writer_kind="AUTO_SAVE"):
+                self.set_clean()
+            else:
+                self.dirty = True
+                self.actions.save.setEnabled(True)
             if (
                 hasattr(self, "navigator_dialog")
                 and self.navigator_dialog.isVisible()
@@ -2440,6 +2670,7 @@ class LabelingWidget(LabelDialog):
             action.setEnabled(value)
         for action in self.actions.on_load_active:
             action.setEnabled(value)
+        self._sync_pose_action_state()
 
         if value and self.file_list_widget.count() > 0:
             self.actions.shape_manager.setEnabled(True)
@@ -2459,6 +2690,8 @@ class LabelingWidget(LabelDialog):
         self.image_data = None
         self.label_file = None
         self.other_data = {}
+        self._loaded_label_path = None
+        self._loaded_label_document_digest = None
         self.canvas.reset_state()
         self.compare_view_manager.reset()
         self.label_filter_combobox.text_box.clear()
@@ -2883,6 +3116,14 @@ class LabelingWidget(LabelDialog):
     def toggle_draw_mode(
         self, edit=True, create_mode="rectangle", disable_auto_labeling=True
     ):
+        keep_pose_mode = (
+            not edit
+            and create_mode == "rectangle"
+            and self.pending_pose_class is not None
+        )
+        if not keep_pose_mode and self.pending_pose_class is not None:
+            self._clear_pose_mode()
+
         # Disable auto labeling if needed
         if (
             disable_auto_labeling
@@ -2979,6 +3220,7 @@ class LabelingWidget(LabelDialog):
         self.label_instruction.setText(self.get_labeling_instruction())
 
     def set_edit_mode(self):
+        self._clear_pose_mode()
         # Disable auto labeling
         self.clear_auto_labeling_marks()
         self.auto_labeling_widget.set_auto_labeling_mode(None)
@@ -3269,7 +3511,7 @@ class LabelingWidget(LabelDialog):
                                 break
         return
 
-    def update_attributes(self, shape_index):
+    def update_attributes(self, shape_index):  # noqa: C901
         if shape_index >= len(self.canvas.shapes) or shape_index < 0:
             self.hide_attributes_panel()
             return
@@ -3600,13 +3842,31 @@ class LabelingWidget(LabelDialog):
                 filename=filename,
                 shapes=shapes,
                 image_path=image_path,
+                image_source_path=self.image_path,
                 image_data=image_data,
                 image_height=self.image.height(),
                 image_width=self.image.width(),
                 other_data=self.other_data,
                 flags=flags,
+                pre_document_digest=(
+                    self.annotation_commit_bridge.pre_document_digest(filename)
+                ),
+                before_write=lambda document, current: (
+                    self.annotation_commit_bridge.prepare_saved_label(
+                        "MANUAL_SAVE",
+                        self.filename,
+                        filename,
+                        document,
+                        current,
+                    )
+                ),
             )
             self.label_file = label_file
+            self.annotation_commit_bridge.publish_saved_label(
+                "MANUAL_SAVE",
+                self.filename,
+                filename,
+            )
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchExactly
             )
@@ -3617,7 +3877,19 @@ class LabelingWidget(LabelDialog):
             # disable allows next and previous image to proceed
             # self.filename = filename
             return True
+        except AnnotationCommitBridgeError as exc:
+            self.dirty = True
+            self.error_message(
+                auto_labeling_text_v1("integrity_refresh_required"),
+                self.tr("<b>%s</b>") % exc,
+            )
+            return False
         except LabelFileError as e:
+            self.annotation_commit_bridge.mark_write_failure(
+                e,
+                self.filename,
+                filename,
+            )
             self.error_message(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
@@ -3839,7 +4111,7 @@ class LabelingWidget(LabelDialog):
         unique_gid_list.sort()
         self.gid_filter_combobox.update_items(unique_gid_list)
 
-    def save_labels(self, filename):
+    def save_labels(self, filename, writer_kind="MANUAL_SAVE"):
         label_file = LabelFile()
         # Get current shapes
         # Excluding auto labeling special shapes
@@ -3871,13 +4143,31 @@ class LabelingWidget(LabelDialog):
                 filename=filename,
                 shapes=shapes,
                 image_path=image_path,
+                image_source_path=self.image_path,
                 image_data=image_data,
                 image_height=self.image.height(),
                 image_width=self.image.width(),
                 other_data=self.other_data,
                 flags=flags,
+                pre_document_digest=(
+                    self.annotation_commit_bridge.pre_document_digest(filename)
+                ),
+                before_write=lambda document, current: (
+                    self.annotation_commit_bridge.prepare_saved_label(
+                        writer_kind,
+                        self.filename,
+                        filename,
+                        document,
+                        current,
+                    )
+                ),
             )
             self.label_file = label_file
+            self.annotation_commit_bridge.publish_saved_label(
+                writer_kind,
+                self.filename,
+                filename,
+            )
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchExactly
             )
@@ -3888,7 +4178,19 @@ class LabelingWidget(LabelDialog):
             # disable allows next and previous image to proceed
             # self.filename = filename
             return True
+        except AnnotationCommitBridgeError as exc:
+            self.dirty = True
+            self.error_message(
+                auto_labeling_text_v1("integrity_refresh_required"),
+                self.tr("<b>%s</b>") % exc,
+            )
+            return False
         except LabelFileError as e:
+            self.annotation_commit_bridge.mark_write_failure(
+                e,
+                self.filename,
+                filename,
+            )
             self.error_message(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
@@ -3995,11 +4297,29 @@ class LabelingWidget(LabelDialog):
         self.canvas.load_shapes([item.shape() for item in self.label_list])
 
     # Callback functions:
-    def new_shape(self):
+    def new_shape(self):  # noqa: C901
         """Pop-up and give focus to the label editor.
 
         position MUST be in global coordinates.
         """
+        if (
+            self.pending_pose_class
+            and self.canvas.shapes
+            and self.canvas.shapes[-1].shape_type == "rectangle"
+        ):
+            try:
+                self._finish_pose_shape(self.canvas.shapes[-1])
+            except Exception as exc:
+                logger.warning(f"Failed to create pose annotation: {exc}")
+                rectangle_shape = self.canvas.shapes[-1]
+                self.canvas.delete_shape(rectangle_shape)
+                self._clear_pose_mode()
+                self.error_message(
+                    self.tr("Pose annotation failed"),
+                    self.tr("Failed to create pose annotation: %s") % exc,
+                )
+            return
+
         items = self.unique_label_list.selectedItems()
         text = None
         if items:
@@ -4501,7 +4821,8 @@ class LabelingWidget(LabelDialog):
                     self.update_navigator_shapes()
             else:
                 logger.warning(
-                    f"Shape associated with the hidden item was not found in label list, could not show."
+                    "Shape associated with the hidden item was not found in "
+                    "label list, could not show."
                 )
 
     def get_next_files(self, filename, num_files):
@@ -4616,9 +4937,9 @@ class LabelingWidget(LabelDialog):
         # TODO(jack): icc profile issue warning
         # - qt.gui.icc: fromIccProfile: failed minimal tag size sanity
         # - qt.gui.icc: fromIccProfile: invalid tag offset alignment
-        image = QtGui.QImage.fromData(self.image_data)
-
-        if image.isNull():
+        try:
+            image = utils.decode_image_for_labeling(self.image_data)
+        except (TypeError, ValueError):
             formats = [
                 f"*.{fmt.data().decode()}"
                 for fmt in QtGui.QImageReader.supportedImageFormats()
@@ -4672,6 +4993,7 @@ class LabelingWidget(LabelDialog):
             if self.label_file.flags is not None:
                 flags.update(self.label_file.flags)
         self.load_flags(flags)
+        self.annotation_commit_bridge.record_loaded_label(label_file)
 
         # load shapes
         if self._config["keep_prev"] and self.no_shape():
@@ -4782,6 +5104,330 @@ class LabelingWidget(LabelDialog):
         return w / self.canvas.pixmap.width()
 
     # QT Overload
+    def set_auto_labeling_host_context(self, context):
+        context = validate_auto_labeling_host_context(context)
+        self.auto_labeling_host_context = context
+        set_global_auto_labeling_host_context(context)
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.set_auto_labeling_host_context(context)
+        authoritative_counts = (
+            LabelingWidget.refresh_auto_labeling_pending_review_counts(self)
+        )
+        if authoritative_counts is None:
+            self._historical_pending_review_count = int(
+                getattr(context, "historical_pending_review_count", 0) or 0
+            )
+        refresh_pending = getattr(
+            self,
+            "_refresh_pending_review_controls",
+            None,
+        )
+        if callable(refresh_pending):
+            refresh_pending()
+        return context
+
+    def refresh_auto_labeling_pending_review_counts(self, image_id=None):
+        """Apply host-owned Review counts without trusting process-local totals."""
+
+        context = getattr(self, "auto_labeling_host_context", None)
+        refresh = getattr(context, "refresh_pending_review_counts", None)
+        if not callable(refresh):
+            return None
+        try:
+            counts = refresh(image_id)
+        except Exception:
+            return None
+        if not isinstance(counts, dict):
+            return None
+        session_count = counts.get("session")
+        historical_count = counts.get("historical")
+        if type(session_count) is not int or type(historical_count) is not int:
+            return None
+        LabelingWidget.set_auto_labeling_pending_review_count(
+            self,
+            session_count,
+            scope="session",
+        )
+        LabelingWidget.set_auto_labeling_pending_review_count(
+            self,
+            historical_count,
+            scope="historical",
+        )
+        return counts
+
+    def start_auto_labeling_review(self, client=None):
+        """Open staged review without loading a model or creating a run."""
+
+        if self._auto_labeling_audit_session is not None:
+            return False
+        if client is None and self.auto_labeling_host_context is not None:
+            client = getattr(
+                self.auto_labeling_host_context,
+                "staged_audit_client",
+                None,
+            )
+        if client is None:
+            client = self._standalone_auto_labeling_audit_client
+        if client is None:
+            return False
+        from .widgets.auto_labeling_audit_dialog import StagedAuditUiSession
+
+        session = StagedAuditUiSession(self, client)
+        self._auto_labeling_audit_session = session
+        if session.begin():
+            return True
+        self._auto_labeling_audit_session = None
+        return False
+
+    def open_auto_labeling_review(self):
+        """Open current Session review or request a historical review Session."""
+
+        if self._auto_labeling_audit_session is not None:
+            self.right_sidebar_tabs.setCurrentWidget(self.audit_sidebar_page)
+            return True
+        context = self.auto_labeling_host_context
+        if self._session_pending_review_count > 0:
+            client = (
+                getattr(context, "audit_client", None) if context else None
+            )
+            return self.start_auto_labeling_review(client)
+        if self._historical_pending_review_count > 0 and context is not None:
+            callback = getattr(context, "request_historical_review", None)
+            if callable(callback):
+                return callback() is not False
+        client = getattr(context, "audit_client", None) if context else None
+        if client is not None:
+            return self.start_auto_labeling_review(client)
+        return False
+
+    def create_auto_labeling_audit_panel(self):
+        from .widgets.auto_labeling_audit_dialog import AutoLabelingAuditPanel
+
+        return AutoLabelingAuditPanel(self.audit_sidebar_page)
+
+    def show_auto_labeling_audit_panel(self, panel):
+        self.audit_empty_label.hide()
+        self.audit_open_button.hide()
+        self.audit_sidebar_layout.insertWidget(0, panel)
+        panel.show()
+        self.right_sidebar_tabs.setCurrentWidget(self.audit_sidebar_page)
+
+    def remove_auto_labeling_audit_panel(self, panel):
+        self.audit_sidebar_layout.removeWidget(panel)
+        panel.hide()
+        panel.deleteLater()
+        self.audit_empty_label.show()
+        self.audit_open_button.show()
+        self._refresh_pending_review_controls()
+
+    def set_auto_labeling_pending_review_count(
+        self, count, *, scope="session"
+    ):
+        if scope not in {"session", "historical"}:
+            raise ValueError("invalid_pending_review_scope")
+        count = max(0, int(count or 0))
+        if scope == "historical":
+            self._historical_pending_review_count = count
+        else:
+            self._session_pending_review_count = count
+        LabelingWidget._refresh_pending_review_controls(self)
+
+    def _refresh_pending_review_controls(self):
+        total = (
+            self._session_pending_review_count
+            + self._historical_pending_review_count
+        )
+        text = auto_labeling_text_v1("pending_review_count", count=total)
+        if hasattr(self, "audit_open_button"):
+            self.audit_open_button.setText(text)
+            self.audit_open_button.setEnabled(total > 0)
+        if hasattr(self, "right_sidebar_tabs"):
+            index = self.right_sidebar_tabs.indexOf(self.audit_sidebar_page)
+            if index >= 0:
+                self.right_sidebar_tabs.setTabText(
+                    index,
+                    auto_labeling_text_v1("audit_tab", count=total),
+                )
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            setter = getattr(auto_widget, "set_pending_review_count", None)
+            if callable(setter):
+                setter(total)
+
+    def _right_sidebar_tab_changed(self, _index):
+        self.update_thumbnail_display()
+
+    def set_auto_labeling_images_ready(self, ready):
+        if self.auto_labeling_host_context is not None:
+            self.auto_labeling_host_context.images_ready = bool(ready)
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.set_images_ready(ready)
+
+    @staticmethod
+    def _sequence_record_value(record, field):
+        if isinstance(record, dict):
+            return record.get(field)
+        return getattr(record, field, None)
+
+    @staticmethod
+    def _sequence_canonical_path(path):
+        return osp.normcase(osp.realpath(osp.abspath(path)))
+
+    def begin_sequence_presentation(self, token, records_by_id):
+        if type(token) is not str or not token:
+            raise ValueError("presentation_token_invalid")
+        current = getattr(self, "_sequence_presentation_session", None)
+        if current is not None and current.get("token") != token:
+            raise ValueError("presentation_session_already_active")
+        if type(records_by_id) is not dict:
+            raise ValueError("presentation_records_invalid")
+        records = {}
+        image_paths = set()
+        label_paths = set()
+        for image_id, record in records_by_id.items():
+            if type(image_id) is not str or not image_id:
+                raise ValueError("presentation_image_identity_mismatch")
+            image_path = self._sequence_record_value(
+                record, "canonical_session_image_path"
+            )
+            label_path = self._sequence_record_value(
+                record, "canonical_session_label_path"
+            )
+            if (
+                type(image_path) is not str
+                or self._sequence_canonical_path(image_path) != image_path
+                or type(label_path) is not str
+                or self._sequence_canonical_path(label_path) != label_path
+                or image_path in image_paths
+                or label_path in label_paths
+            ):
+                raise ValueError("presentation_path_mismatch")
+            records[image_id] = (image_path, label_path)
+            image_paths.add(image_path)
+            label_paths.add(label_path)
+        self._sequence_presentation_session = {
+            "token": token,
+            "records": records,
+            "epoch": 0,
+        }
+
+    def _sequence_presentation_target(
+        self,
+        token,
+        epoch,
+        image_id,
+        image_path,
+        label_path=None,
+    ):
+        session = getattr(self, "_sequence_presentation_session", None)
+        if session is None or session.get("token") != token:
+            raise ValueError("presentation_token_mismatch")
+        if type(epoch) is not int or epoch <= 0:
+            raise ValueError("presentation_epoch_invalid")
+        if epoch < session["epoch"]:
+            raise ValueError("presentation_epoch_stale")
+        target = session["records"].get(image_id)
+        if target is None or target[0] != self._sequence_canonical_path(
+            image_path
+        ):
+            raise ValueError("presentation_image_identity_mismatch")
+        if label_path is not None and target[
+            1
+        ] != self._sequence_canonical_path(label_path):
+            raise ValueError("presentation_path_mismatch")
+        session["epoch"] = epoch
+        return target
+
+    def load_sequence_image_for_presentation(
+        self, token, epoch, image_id, image_path
+    ):
+        target_image, _target_label = self._sequence_presentation_target(
+            token, epoch, image_id, image_path
+        )
+        matches = [
+            (index, path)
+            for index, path in enumerate(self.image_list)
+            if self._sequence_canonical_path(path) == target_image
+        ]
+        if len(matches) != 1:
+            raise ValueError("presentation_image_identity_mismatch")
+        index, listed_path = matches[0]
+        if self.fn_to_index.get(str(listed_path)) != index:
+            raise ValueError("presentation_file_index_mismatch")
+        blocker = QtCore.QSignalBlocker(self.file_list_widget)
+        keep_prev = self._config.get("keep_prev", False)
+        try:
+            self.file_list_widget.setCurrentRow(index)
+            self._config["keep_prev"] = False
+            loaded = self.load_file(target_image)
+        finally:
+            self._config["keep_prev"] = keep_prev
+            del blocker
+        if not loaded or (
+            self._sequence_canonical_path(self.filename) != target_image
+            or self.file_list_widget.currentRow() != index
+        ):
+            return False
+        self.canvas.shapes_backups = []
+        self.actions.undo.setEnabled(False)
+        self.set_clean()
+        return True
+
+    def present_committed_sequence_document(
+        self,
+        token,
+        epoch,
+        image_id,
+        image_path,
+        label_path,
+    ):
+        _target_image, target_label = self._sequence_presentation_target(
+            token,
+            epoch,
+            image_id,
+            image_path,
+            label_path,
+        )
+        if not self.load_sequence_image_for_presentation(
+            token, epoch, image_id, image_path
+        ):
+            return False
+        if (
+            self._sequence_canonical_path(self.get_label_file())
+            != target_label
+        ):
+            raise ValueError("presentation_path_mismatch")
+        self.canvas.shapes_backups = []
+        self.actions.undo.setEnabled(False)
+        self.set_clean()
+        return True
+
+    def end_sequence_presentation(self, token):
+        session = getattr(self, "_sequence_presentation_session", None)
+        if session is None or session.get("token") != token:
+            return False
+        self._sequence_presentation_session = None
+        return True
+
+    def clear_auto_labeling_host_context(self):
+        context = self.auto_labeling_host_context
+        self.auto_labeling_host_context = None
+        self._session_pending_review_count = 0
+        self._historical_pending_review_count = 0
+        refresh_pending = getattr(
+            self,
+            "_refresh_pending_review_controls",
+            None,
+        )
+        if callable(refresh_pending):
+            refresh_pending()
+        clear_global_auto_labeling_host_context(context)
+        auto_widget = getattr(self, "auto_labeling_widget", None)
+        if auto_widget is not None:
+            auto_widget.clear_auto_labeling_host_context()
+
     def closeEvent(self, event):
         if not self.may_continue():
             event.ignore()
@@ -4895,6 +5541,8 @@ class LabelingWidget(LabelDialog):
                 break
 
     def open_prev_image(self, _value=False):
+        if getattr(self, "auto_labeling_audit_active", False):
+            return False
         if not self.may_continue():
             return
 
@@ -4911,6 +5559,8 @@ class LabelingWidget(LabelDialog):
                 self.load_file(filename)
 
     def open_next_image(self, _value=False, load=True):
+        if getattr(self, "auto_labeling_audit_active", False):
+            return False
         if not self.may_continue():
             return
 
@@ -4959,6 +5609,10 @@ class LabelingWidget(LabelDialog):
                 self.load_file(filename)
 
     def change_output_dir_dialog(self, _value=False):
+        if getattr(self, "auto_labeling_audit_active", False) or (
+            self.auto_labeling_host_context is not None
+        ):
+            return False
         default_output_dir = self.output_dir
         if default_output_dir is None and self.filename:
             default_output_dir = osp.dirname(self.filename)
@@ -4997,18 +5651,46 @@ class LabelingWidget(LabelDialog):
 
     def save_file(self, _value=False):
         assert not self.image.isNull(), "cannot save empty image"
+        if getattr(self, "auto_labeling_commit_blocked", False):
+            try:
+                self.annotation_commit_bridge.integrity_refresh()
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    auto_labeling_text_v1("integrity_refresh_required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
+        try:
+            authoritative_label = (
+                self.annotation_commit_bridge.authoritative_label_path(
+                    self.filename
+                )
+            )
+        except AnnotationCommitBridgeError as exc:
+            self.error_message(
+                auto_labeling_text_v1("integrity_refresh_required"),
+                self.tr("<b>%s</b>") % exc,
+            )
+            return False
+        if authoritative_label is not None:
+            return self._save_file(authoritative_label)
         if self.label_file:
             # DL20180323 - overwrite when in directory
-            self._save_file(self.label_file.filename)
+            return self._save_file(self.label_file.filename)
         elif self.output_file:
-            self._save_file(self.output_file)
-            self.close()
-        else:
-            self._save_file(self.save_file_dialog())
+            saved = self._save_file(self.output_file)
+            if saved:
+                self.close()
+            return saved
+        return self._save_file(self.save_file_dialog())
 
     def save_file_as(self, _value=False):
+        if getattr(self, "auto_labeling_audit_active", False) or (
+            self.auto_labeling_host_context is not None
+        ):
+            return False
         assert not self.image.isNull(), "cannot save empty image"
-        self._save_file(self.save_file_dialog())
+        return self._save_file(self.save_file_dialog())
 
     def save_file_dialog(self):
         caption = self.tr("%s - Choose File") % __appname__
@@ -5050,6 +5732,8 @@ class LabelingWidget(LabelDialog):
         if filename and self.save_labels(filename):
             self.add_recent_file(filename)
             self.set_clean()
+            return True
+        return False
 
     def close_file(self, _value=False):
         if not self.may_continue():
@@ -5140,11 +5824,35 @@ class LabelingWidget(LabelDialog):
         )
         answer = mb.warning(self, self.tr("Attention"), msg, mb.Yes | mb.No)
         if answer != mb.Yes:
-            return
+            return False
 
         label_file = self.get_label_file()
+        recovered_pending = False
+        if getattr(self, "auto_labeling_commit_blocked", False):
+            try:
+                self.annotation_commit_bridge.integrity_refresh()
+                recovered_pending = True
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    auto_labeling_text_v1("integrity_refresh_required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
         if osp.exists(label_file):
-            os.remove(label_file)
+            try:
+                self.annotation_commit_bridge.delete_label(
+                    self.filename,
+                    label_file,
+                )
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    auto_labeling_text_v1("integrity_refresh_required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
+        elif not recovered_pending:
+            return False
+        if not osp.exists(label_file):
             logger.info(f"Label file is removed: {label_file}")
 
             item = self.file_list_widget.currentItem()
@@ -5155,8 +5863,14 @@ class LabelingWidget(LabelDialog):
             self.filename = filename
             if self.filename:
                 self.load_file(self.filename)
+            return True
+        return False
 
     def delete_image_file(self):
+        if getattr(self, "auto_labeling_audit_active", False) or (
+            self.auto_labeling_host_context is not None
+        ):
+            return False
         if len(self.image_list) < 2:
             return
 
@@ -5237,6 +5951,17 @@ class LabelingWidget(LabelDialog):
         return osp.exists(label_file)
 
     def may_continue(self):
+        if getattr(self, "fast_auto_labeling_edit_locked", False):
+            return False
+        if getattr(self, "auto_labeling_commit_blocked", False):
+            try:
+                self.annotation_commit_bridge.integrity_refresh()
+            except AnnotationCommitBridgeError as exc:
+                self.error_message(
+                    auto_labeling_text_v1("integrity_refresh_required"),
+                    self.tr("<b>%s</b>") % exc,
+                )
+                return False
         if not self.dirty:
             return True
         mb = QtWidgets.QMessageBox
@@ -5253,8 +5978,10 @@ class LabelingWidget(LabelDialog):
         if answer == mb.Discard:
             return True
         if answer == mb.Save:
-            self.save_file()
-            return True
+            return (
+                bool(self.save_file())
+                and not self.auto_labeling_commit_blocked
+            )
         # answer == mb.Cancel
         return False
 
@@ -5289,7 +6016,27 @@ class LabelingWidget(LabelDialog):
                     action.setEnabled(False)
 
     def delete_selected_shape(self):
-        self.remove_labels(self.canvas.delete_selected())
+        selected_shapes = list(self.canvas.selected_shapes)
+        pose_keypoints = self._pose_keypoints_for_selected_rectangles(
+            selected_shapes
+        )
+        if pose_keypoints:
+            reply = QMessageBox.question(
+                self,
+                self.tr("Delete Pose"),
+                self.tr("Delete keypoints in the same pose group too?"),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply == QMessageBox.Yes:
+                deleted_shapes = self.canvas.delete_shapes(
+                    selected_shapes + pose_keypoints
+                )
+            else:
+                deleted_shapes = self.canvas.delete_selected()
+        else:
+            deleted_shapes = self.canvas.delete_selected()
+        self.remove_labels(deleted_shapes)
         self.set_dirty()
         if self.no_shape():
             for action in self.actions.on_shapes_present:
@@ -5443,13 +6190,10 @@ class LabelingWidget(LabelDialog):
             self.async_exif_scanner.start_scan(image_files)
 
     def toggle_auto_labeling_widget(self):
-        """Toggle auto labeling widget visibility."""
-        if self.auto_labeling_widget.isVisible():
-            self.auto_labeling_widget.hide()
-            self.actions.run_all_images.setEnabled(False)
-        else:
-            self.auto_labeling_widget.show()
-            self.actions.run_all_images.setEnabled(True)
+        """Show or hide the auto-labeling toolbar above the canvas."""
+        visible = not self.auto_labeling_widget.isVisible()
+        self.auto_labeling_widget.setVisible(visible)
+        self.actions.run_all_images.setEnabled(visible)
         self.update_thumbnail_display()
 
     @pyqtSlot()

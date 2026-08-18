@@ -25,12 +25,15 @@ from anylabeling.services.auto_labeling import (
 from anylabeling.views.labeling.logger import logger
 from anylabeling.views.labeling.shape import Shape
 from anylabeling.views.labeling.utils._io import io_open
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_text_v1,
+)
 from anylabeling.views.labeling.utils.qt import new_icon_path
 from anylabeling.views.labeling.utils.style import get_msg_box_style
 from anylabeling.views.labeling.widgets.popup import Popup
 
 
-__all__ = ["run_all_images"]
+__all__ = ["run_all_images", "run_all_images_legacy"]
 
 
 class TextInputDialog(QDialog):
@@ -71,7 +74,7 @@ class TextInputDialog(QDialog):
                 background-color: #ffffff;
                 border-radius: 10px;
             }
-            
+
             QLineEdit {
                 border: 1px solid #E5E5E5;
                 border-radius: 8px;
@@ -80,16 +83,16 @@ class TextInputDialog(QDialog):
                 height: 36px;
                 padding: 0 12px;
             }
-            
+
             QLineEdit:hover {
                 background-color: #DBDBDB;
             }
-            
+
             QLineEdit:focus {
                 border: 2px solid #0066FF;
                 background-color: #F9F9F9;
             }
-            
+
             QPushButton {
                 min-width: 100px;
                 height: 36px;
@@ -97,31 +100,31 @@ class TextInputDialog(QDialog):
                 font-weight: 500;
                 font-size: 13px;
             }
-            
+
             QPushButton[text="OK"] {
                 background-color: #0066FF;
                 color: white;
                 border: none;
             }
-            
+
             QPushButton[text="OK"]:hover {
                 background-color: #0077ED;
             }
-            
+
             QPushButton[text="OK"]:pressed {
                 background-color: #0068D0;
             }
-            
+
             QPushButton[text="Cancel"] {
                 background-color: #f5f5f7;
                 color: #1d1d1f;
                 border: 1px solid #d2d2d7;
             }
-            
+
             QPushButton[text="Cancel"]:hover {
                 background-color: #e5e5e5;
             }
-            
+
             QPushButton[text="Cancel"]:pressed {
                 background-color: #d5d5d5;
             }
@@ -280,8 +283,20 @@ def process_next_image(self, progress_dialog, batch=True):
     ]
     total_images = len(self.image_list)
     self._progress_dialog = progress_dialog
+    manager = self.auto_labeling_widget.model_manager
+    acquire_lease = getattr(manager, "acquire_inference_lease", None)
+    if callable(acquire_lease):
+        lease_token = acquire_lease(
+            "LEGACY_AUTO_RUN", f"legacy-auto-run:{id(progress_dialog)}"
+        )
+    else:
+        lease_token = manager.inference_lease.acquire(
+            "LEGACY_AUTO_RUN", f"legacy-auto-run:{id(progress_dialog)}"
+        )
 
     try:
+        if lease_token is None:
+            raise RuntimeError("inference_lease_busy")
         while (self.image_index < total_images) and (
             not self.cancel_processing
         ):
@@ -313,6 +328,7 @@ def process_next_image(self, progress_dialog, batch=True):
                         image_file,
                         text_prompt=self.text_prompt,
                         batch=batch,
+                        lease_token=lease_token,
                     )
                 )
             elif self.run_tracker:
@@ -322,6 +338,7 @@ def process_next_image(self, progress_dialog, batch=True):
                         image_file,
                         run_tracker=self.run_tracker,
                         batch=batch,
+                        lease_token=lease_token,
                     )
                 )
                 if batch_processing_mode == "video":
@@ -342,6 +359,7 @@ def process_next_image(self, progress_dialog, batch=True):
                         image_file,
                         batch=batch,
                         existing_shapes=existing_shapes,
+                        lease_token=lease_token,
                     )
                 )
 
@@ -364,6 +382,10 @@ def process_next_image(self, progress_dialog, batch=True):
             icon=new_icon_path("error", "svg"),
         )
         popup.show_popup(self, position="center")
+    finally:
+        if lease_token is not None:
+            lease_token.release()
+            manager.on_inference_idle()
 
 
 def show_progress_dialog_and_process(self):
@@ -473,7 +495,7 @@ def show_progress_dialog_and_process(self):
     QTimer.singleShot(200, lambda: process_next_image(self, progress_dialog))
 
 
-def run_all_images(self):
+def run_all_images_legacy(self):
     if len(self.image_list) < 1:
         return
 
@@ -566,3 +588,34 @@ def run_all_images(self):
         show_progress_dialog_and_process(self)
     else:
         show_progress_dialog_and_process(self)
+
+
+def run_all_images(self):
+    """Route Ctrl+B to zero-delay sequence or preserve Legacy Batch."""
+
+    auto_widget = self.auto_labeling_widget
+    manager = auto_widget.model_manager
+    model_config = manager.loaded_model_config
+    if model_config is None:
+        manager.new_model_status.emit(
+            self.tr("Model is not loaded. Choose a mode to continue.")
+        )
+        return None
+
+    from .auto_labeling_sequence import (
+        UNIFIED_SEQUENCE_ROUTE_V1,
+        resolve_sequence_capability_decision_v1,
+    )
+
+    decision = resolve_sequence_capability_decision_v1(model_config)
+    if decision.route == UNIFIED_SEQUENCE_ROUTE_V1:
+        opener = getattr(auto_widget, "open_continuous_auto_labeling", None)
+        if not callable(opener):
+            manager.new_model_status.emit(
+                auto_labeling_text_v1("sequence_unavailable_no_fallback")
+            )
+            return False
+        return opener()
+
+    manager.new_model_status.emit(auto_labeling_text_v1("legacy_no_audit"))
+    return run_all_images_legacy(self)

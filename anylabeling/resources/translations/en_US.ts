@@ -2637,8 +2637,8 @@ Reset the label as {}.</source>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1073"/>
-        <source>Show label inside shapes</source>
-        <translation type="unfinished"></translation>
+        <source>Show labels near shapes</source>
+        <translation>Show labels near shapes</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="855"/>
@@ -2677,8 +2677,8 @@ Reset the label as {}.</source>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1084"/>
-        <source>Show score inside shapes</source>
-        <translation type="unfinished"></translation>
+        <source>Show scores with labels</source>
+        <translation>Show scores with labels</translation>
     </message>
     <message>
         <location filename="../../views/labeling/label_widget.py" line="1115"/>
@@ -5354,5 +5354,131 @@ Original images backed up to:
         <source>Thumbnail - Click anywhere to close</source>
         <translation type="unfinished"></translation>
     </message>
+</context>
+<context>
+    <name>AutoLabelingPhase8</name>
+    <message><source>Continuous auto-labeling...</source><translation>Continuous auto-labeling...</translation></message>
+    <message><source>Continuous auto-labeling</source><translation>Continuous auto-labeling</translation></message>
+    <message><source>All images</source><translation>All images</translation></message>
+    <message><source>Current image to end</source><translation>Current image to end</translation></message>
+    <message><source>Base range</source><translation>Base range</translation></message>
+    <message><source>All</source><translation>All</translation></message>
+    <message><source>Only images without a valid annotation</source><translation>Only images without a valid annotation</translation></message>
+    <message><source>Filter</source><translation>Filter</translation></message>
+    <message><source>Skip existing annotations</source><translation>Skip existing annotations</translation></message>
+    <message><source>Force replace</source><translation>Force replace</translation></message>
+    <message><source>Confirm replacement</source><translation>Confirm replacement</translation></message>
+    <message><source>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</source><translation>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</translation></message>
+    <message><source>Write policy</source><translation>Write policy</translation></message>
+    <message><source> s</source><translation> s</translation></message>
+    <message><source>Dwell time</source><translation>Dwell time</translation></message>
+    <message><source>Model and parameters</source><translation>Model and parameters</translation></message>
+    <message><source>Workset images</source><translation>Workset images</translation></message>
+    <message><source>Existing annotations</source><translation>Existing annotations</translation></message>
+    <message><source>Host preparation failures</source><translation>Host preparation failures</translation></message>
+    <message><source>Fast</source><translation>Fast</translation></message>
+    <message><source>Fast: infer and save each image in the background without switching the main canvas.</source><translation>Fast: infer and save each image in the background without switching the main canvas.</translation></message>
+    <message><source>Start Fast auto-labeling</source><translation>Start Fast auto-labeling</translation></message>
+    <message><source>Visible</source><translation>Visible</translation></message>
+    <message><source>Visible: display each result after a verified save, then advance after the configured dwell time.</source><translation>Visible: display each result after a verified save, then advance after the configured dwell time.</translation></message>
+    <message><source>Start Visible auto-labeling</source><translation>Start Visible auto-labeling</translation></message>
+    <message><source>Continuous auto-labeling progress</source><translation>Continuous auto-labeling progress</translation></message>
+    <message><source>Preparing</source><translation>Preparing</translation></message>
+    <message><source>Configured dwell time</source><translation>Configured dwell time</translation></message>
+    <message><source>Remaining dwell time</source><translation>Remaining dwell time</translation></message>
+    <message><source>Workset total</source><translation>Workset total</translation></message>
+    <message><source>Selected by range</source><translation>Selected by range</translation></message>
+    <message><source>Eligible for inference</source><translation>Eligible for inference</translation></message>
+    <message><source>Safely saved</source><translation>Safely saved</translation></message>
+    <message><source>Succeeded</source><translation>Succeeded</translation></message>
+    <message><source>Zero target</source><translation>Zero target</translation></message>
+    <message><source>Skipped existing</source><translation>Skipped existing</translation></message>
+    <message><source>Skipped outside range</source><translation>Skipped outside range</translation></message>
+    <message><source>Host preparation failed</source><translation>Host preparation failed</translation></message>
+    <message><source>Failed input</source><translation>Failed input</translation></message>
+    <message><source>Unresolved model failures</source><translation>Unresolved model failures</translation></message>
+    <message><source>Explicit error skips</source><translation>Explicit error skips</translation></message>
+    <message><source>Conflicts</source><translation>Conflicts</translation></message>
+    <message><source>Pending review</source><translation>Pending review</translation></message>
+    <message><source>Pending review {count}</source><translation>Pending review {count}</translation></message>
+    <message><source>Labels</source><translation>Labels</translation></message>
+    <message><source>Auto labeling</source><translation>Auto labeling</translation></message>
+    <message><source>Review ({count})</source><translation>Review ({count})</translation></message>
+    <message><source>No pending image in this session.</source><translation>No pending image in this session.</translation></message>
+    <message><source>Remaining</source><translation>Remaining</translation></message>
+    <message><source>Processing status</source><translation>Processing status</translation></message>
+    <message><source>Completed with errors</source><translation>Completed with errors</translation></message>
+    <message><source>Pause and edit</source><translation>Pause and edit</translation></message>
+    <message><source>Finish the current image safely, then unlock drawing and saving.</source><translation>Finish the current image safely, then unlock drawing and saving.</translation></message>
+    <message><source>Stop</source><translation>Stop</translation></message>
+    <message><source>Retry current image</source><translation>Retry current image</translation></message>
+    <message><source>Skip current image</source><translation>Skip current image</translation></message>
+    <message><source>Review now</source><translation>Review now</translation></message>
+    <message><source>Review later</source><translation>Review later</translation></message>
+    <message><source>Preparing the image</source><translation>Preparing the image</translation></message>
+    <message><source>Running inference</source><translation>Running inference</translation></message>
+    <message><source>Saving safely</source><translation>Saving safely</translation></message>
+    <message><source>Saved result displayed</source><translation>Saved result displayed</translation></message>
+    <message><source>Waiting for error resolution</source><translation>Waiting for error resolution</translation></message>
+    <message><source>Paused - editing enabled</source><translation>Paused - editing enabled</translation></message>
+    <message><source>Paused</source><translation>Paused</translation></message>
+    <message><source>Pausing safely after the current image is saved...</source><translation>Pausing safely after the current image is saved...</translation></message>
+    <message><source>Run finished</source><translation>Run finished</translation></message>
+    <message><source>Continue</source><translation>Continue</translation></message>
+    <message><source>Paused - editing enabled ({remaining:.1f} s remaining)</source><translation>Paused - editing enabled ({remaining:.1f} s remaining)</translation></message>
+    <message><source>Nothing to process</source><translation>Nothing to process</translation></message>
+    <message><source>Run result: {status}</source><translation>Run result: {status}</translation></message>
+    <message><source>Close</source><translation>Close</translation></message>
+    <message><source>Start continuous auto-labeling</source><translation>Start continuous auto-labeling</translation></message>
+    <message><source>The current image has unsaved changes.</source><translation>The current image has unsaved changes.</translation></message>
+    <message><source>Continue continuous auto-labeling</source><translation>Continue continuous auto-labeling</translation></message>
+    <message><source>Stop continuous auto-labeling</source><translation>Stop continuous auto-labeling</translation></message>
+    <message><source>Cannot continue continuous auto-labeling</source><translation>Cannot continue continuous auto-labeling</translation></message>
+    <message><source>Cannot start continuous auto-labeling</source><translation>Cannot start continuous auto-labeling</translation></message>
+    <message><source>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</source><translation>Fast uses a 0.0 s delay and does not switch the main canvas for each image.</translation></message>
+    <message><source>Continuous auto-labeling is already running.</source><translation>Continuous auto-labeling is already running.</translation></message>
+    <message><source>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</source><translation>Legacy Batch: this model does not support Fast or Visible continuous auto-labeling. Legacy Batch does not create a unified audit queue.</translation></message>
+    <message><source>Fast/Visible continuous auto-labeling is unavailable. Legacy Batch was not started automatically.</source><translation>Fast/Visible continuous auto-labeling is unavailable. Legacy Batch was not started automatically.</translation></message>
+    <message><source>Continuous auto-labeling audit</source><translation>Continuous auto-labeling audit</translation></message>
+    <message><source>Previous</source><translation>Previous</translation></message>
+    <message><source>Next pending review</source><translation>Next pending review</translation></message>
+    <message><source>Mark needs fix</source><translation>Mark needs fix</translation></message>
+    <message><source>Save, approve, and next</source><translation>Save, approve, and next</translation></message>
+    <message><source>Approve and next</source><translation>Approve and next</translation></message>
+    <message><source>Finish audit</source><translation>Finish audit</translation></message>
+    <message><source>{filename}  |  image_id={image_id}  |  #{sequence}</source><translation>{filename}  |  image_id={image_id}  |  #{sequence}</translation></message>
+    <message><source>Review status: {status}  |  dirty={dirty}</source><translation>Review status: {status}  |  dirty={dirty}</translation></message>
+    <message><source>staged={staged}  |  source={source}  |  target_count={target_count}  |  zero_target={zero_target}</source><translation>staged={staged}  |  source={source}  |  target_count={target_count}  |  zero_target={zero_target}</translation></message>
+    <message><source>Session approved {staged_approved}  |  source approved {source_approved}  |  needs fix {needs_fix}  |  pending {pending}  |  stale {stale}</source><translation>Session approved {staged_approved}  |  source approved {source_approved}  |  needs fix {needs_fix}  |  pending {pending}  |  stale {stale}</translation></message>
+    <message><source>Audit action failed</source><translation>Audit action failed</translation></message>
+    <message><source>Unsaved annotation</source><translation>Unsaved annotation</translation></message>
+    <message><source>Save or discard the current changes before switching review images.</source><translation>Save or discard the current changes before switching review images.</translation></message>
+    <message><source>Not applicable</source><translation>Not applicable</translation></message>
+    <message><source>Pending</source><translation>Pending</translation></message>
+    <message><source>Staged approved</source><translation>Staged approved</translation></message>
+    <message><source>Approved</source><translation>Approved</translation></message>
+    <message><source>Needs fix</source><translation>Needs fix</translation></message>
+    <message><source>Stale</source><translation>Stale</translation></message>
+    <message><source>Conflict</source><translation>Conflict</translation></message>
+    <message><source>None</source><translation>None</translation></message>
+    <message><source>Prepared</source><translation>Prepared</translation></message>
+    <message><source>Committed</source><translation>Committed</translation></message>
+    <message><source>Abandoned</source><translation>Abandoned</translation></message>
+    <message><source>Queued</source><translation>Queued</translation></message>
+    <message><source>Running</source><translation>Running</translation></message>
+    <message><source>Skipped</source><translation>Skipped</translation></message>
+    <message><source>Failed</source><translation>Failed</translation></message>
+    <message><source>Completed</source><translation>Completed</translation></message>
+    <message><source>Partial</source><translation>Partial</translation></message>
+    <message><source>Cancelled</source><translation>Cancelled</translation></message>
+    <message><source>Recovery required</source><translation>Recovery required</translation></message>
+    <message><source>Archived</source><translation>Archived</translation></message>
+    <message><source>Not started</source><translation>Not started</translation></message>
+    <message><source>In progress</source><translation>In progress</translation></message>
+    <message><source>Yes</source><translation>Yes</translation></message>
+    <message><source>No</source><translation>No</translation></message>
+    <message><source>Failure</source><translation>Failure</translation></message>
+    <message><source>Reconciliation pending</source><translation>Reconciliation pending</translation></message>
+    <message><source>Annotation integrity refresh required</source><translation>Annotation integrity refresh required</translation></message>
 </context>
 </TS>

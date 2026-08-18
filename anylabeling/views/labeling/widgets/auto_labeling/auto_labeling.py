@@ -11,6 +11,8 @@ from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QPoint
 from PyQt5.QtWidgets import (
     QDialog,
     QFileDialog,
+    QPushButton,
+    QStyle,
     QWidget,
 )
 
@@ -40,6 +42,12 @@ from anylabeling.views.labeling.widgets.searchable_model_dropdown import (
     save_json,
     _MODELS_CONFIG_PATH,
     SearchableModelDropdownPopup,
+)
+from anylabeling.views.labeling.utils.auto_labeling_host import (
+    validate_auto_labeling_host_context,
+)
+from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    auto_labeling_text_v1,
 )
 
 
@@ -82,8 +90,34 @@ class AutoLabelingWidget(QWidget):
     def __init__(self, parent):
         super().__init__()
         self.parent = parent
+        self.auto_labeling_host_context = None
+        self.prediction_runner = None
+        self._fast_run_session = None
         current_dir = os.path.dirname(__file__)
         uic.loadUi(os.path.join(current_dir, "auto_labeling.ui"), self)
+
+        self.button_continuous_run = QPushButton(
+            auto_labeling_text_v1("continuous_entry"), self
+        )
+        self.button_continuous_run.setIcon(
+            self.style().standardIcon(QStyle.SP_MediaPlay)
+        )
+        self.button_continuous_run.setStyleSheet(get_highlight_button_style())
+        self.button_continuous_run.clicked.connect(
+            self.run_continuous_auto_labeling
+        )
+        self.model_selection.insertWidget(1, self.button_continuous_run)
+        self.button_pending_review = QPushButton(self)
+        self.button_pending_review.setIcon(
+            self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
+        )
+        self.button_pending_review.setStyleSheet(get_normal_button_style())
+        self.button_pending_review.clicked.connect(self.open_pending_review)
+        run_index = self.model_selection.indexOf(self.button_run)
+        self.model_selection.insertWidget(
+            run_index + 1, self.button_pending_review
+        )
+        self.set_pending_review_count(0)
 
         self.skip_auto_prediction = False
         self.model_manager = ModelManager()
@@ -99,6 +133,7 @@ class AutoLabelingWidget(QWidget):
                 auto_labeling_result
             )
         )
+
         self.model_manager.auto_segmentation_model_selected.connect(
             self.auto_segmentation_requested
         )
@@ -149,6 +184,10 @@ class AutoLabelingWidget(QWidget):
             self.florence2_select_combobox.setEnabled(enable)
             self.remote_server_select_combobox.setEnabled(enable)
             self.remote_task_select_combobox.setEnabled(enable)
+            if enable:
+                self.refresh_continuous_run_availability()
+            else:
+                self.button_continuous_run.setEnabled(False)
 
         self.model_manager.prediction_started.connect(
             lambda: set_enable_tools(False)
@@ -317,9 +356,9 @@ class AutoLabelingWidget(QWidget):
         )
         self.mask_fineness_value_label.setStyleSheet(
             """
-            QLabel { 
-                color: #6c757d; 
-                font-size: 10px; 
+            QLabel {
+                color: #6c757d;
+                font-size: 10px;
                 font-weight: 500;
                 background: transparent;
                 border: none;
@@ -348,6 +387,107 @@ class AutoLabelingWidget(QWidget):
         self.populate_florence2_combobox()
         self.populate_gd_combobox()
         self.populate_remote_server_combobox()
+        self.refresh_continuous_run_availability()
+
+    def set_auto_labeling_host_context(self, context):
+        self.auto_labeling_host_context = validate_auto_labeling_host_context(
+            context
+        )
+        refresh = getattr(self, "refresh_continuous_run_availability", None)
+        if callable(refresh):
+            refresh()
+        pending_count = int(
+            getattr(context, "historical_pending_review_count", 0) or 0
+        )
+        set_pending = getattr(self, "set_pending_review_count", None)
+        if callable(set_pending):
+            set_pending(pending_count)
+        return self.auto_labeling_host_context
+
+    def clear_auto_labeling_host_context(self):
+        self.auto_labeling_host_context = None
+        set_pending = getattr(self, "set_pending_review_count", None)
+        if callable(set_pending):
+            set_pending(0)
+        refresh = getattr(self, "refresh_continuous_run_availability", None)
+        if callable(refresh):
+            refresh()
+
+    def set_images_ready(self, ready):
+        if self.auto_labeling_host_context is not None:
+            self.auto_labeling_host_context.images_ready = bool(ready)
+        refresh = getattr(self, "refresh_continuous_run_availability", None)
+        if callable(refresh):
+            refresh()
+
+    def refresh_continuous_run_availability(self):
+        from anylabeling.views.labeling.utils.auto_labeling_sequence import (
+            resolve_sequence_capabilities,
+        )
+
+        config = getattr(self.model_manager, "loaded_model_config", None)
+        loaded = type(config) is dict and config.get("model") is not None
+        ready = self.auto_labeling_host_context is None or bool(
+            self.auto_labeling_host_context.images_ready
+        )
+        active = self._fast_run_session is not None
+        self.button_continuous_run.setEnabled(loaded and ready and not active)
+        capability = resolve_sequence_capabilities(config)
+        if loaded and not capability.supports_fast_sequence:
+            self.button_continuous_run.setToolTip(
+                auto_labeling_text_v1("legacy_no_audit")
+            )
+        else:
+            self.button_continuous_run.setToolTip(
+                auto_labeling_text_v1("fast_tooltip")
+            )
+        pending = int(getattr(self, "_pending_review_count", 0) or 0)
+        self.button_pending_review.setEnabled(pending > 0 and not active)
+
+    def set_pending_review_count(self, count):
+        self._pending_review_count = max(0, int(count or 0))
+        self.button_pending_review.setText(
+            auto_labeling_text_v1(
+                "pending_review_count",
+                count=self._pending_review_count,
+            )
+        )
+        active = self._fast_run_session is not None
+        self.button_pending_review.setEnabled(
+            self._pending_review_count > 0 and not active
+        )
+
+    def open_pending_review(self):
+        opener = getattr(self.parent, "open_auto_labeling_review", None)
+        return bool(callable(opener) and opener())
+
+    def run_continuous_auto_labeling(self):
+        opener = getattr(self, "open_continuous_auto_labeling", None)
+        if callable(opener):
+            return opener(initial_delay=None)
+        # Preserve direct Phase 4 mock calls that only provide ``parent``.
+        from anylabeling.views.labeling.utils.batch import run_all_images
+
+        return run_all_images(self.parent)
+
+    def open_continuous_auto_labeling(self, initial_delay=0.0):
+        if self._fast_run_session is not None:
+            self.model_manager.new_model_status.emit(
+                auto_labeling_text_v1("already_running")
+            )
+            return False
+        from anylabeling.views.labeling.widgets.auto_labeling_run_dialog import (
+            ContinuousRunUiSession,
+        )
+
+        session = ContinuousRunUiSession(
+            self.parent,
+            self,
+            initial_delay=initial_delay,
+        )
+        self._fast_run_session = session
+        self.refresh_continuous_run_availability()
+        return session.begin()
 
     def init_model_data(self):
         """Get models data"""
@@ -390,7 +530,7 @@ class AutoLabelingWidget(QWidget):
                     "config_path": model_dict["config_path"],
                 }
 
-        except Exception as _:
+        except Exception:
             local_model_data = {}
 
         model_list = self.model_manager.get_model_configs()
@@ -467,54 +607,57 @@ class AutoLabelingWidget(QWidget):
         self.model_dropdown.adjustSize()
         self.model_dropdown.show()
 
+    def _configure_remote_server_model(self, model_name):
+        if "remote_server" not in model_name.lower():
+            return True
+        config_path = self.model_info[model_name].get("config_path")
+        if not config_path or not config_path.startswith(":/"):
+            return True
+        try:
+            user_config = get_config()
+            remote_settings = user_config.get("remote_server_settings", {})
+            default_url = remote_settings.get(
+                "server_url",
+                "http://127.0.0.1:8000",
+            )
+            default_api_key = remote_settings.get("api_key", "")
+            dialog = RemoteServerDialog(self, default_url, default_api_key)
+            if dialog.exec_() != QDialog.Accepted:
+                return False
+
+            new_url = dialog.get_server_url()
+            new_api_key = dialog.get_api_key()
+            if new_url:
+                self.model_manager.update_model_config(
+                    config_path,
+                    "server_url",
+                    new_url,
+                )
+            self.model_manager.update_model_config(
+                config_path,
+                "api_key",
+                new_api_key,
+            )
+            if not hasattr(self.parent, "_config"):
+                self.parent._config = {}
+            if "remote_server_settings" not in self.parent._config:
+                self.parent._config["remote_server_settings"] = {}
+            if new_url:
+                self.parent._config["remote_server_settings"][
+                    "server_url"
+                ] = new_url
+            self.parent._config["remote_server_settings"][
+                "api_key"
+            ] = new_api_key
+            return True
+        except Exception as e:
+            logger.error(f"Failed to process remote_server config: {e}")
+            return False
+
     def on_model_selected(self, provider, model_name):
         """Handle the model selected event"""
-
-        if "remote_server" in model_name.lower():
-            config_path = self.model_info[model_name].get("config_path")
-            if config_path and config_path.startswith(":/"):
-                try:
-                    user_config = get_config()
-                    remote_settings = user_config.get(
-                        "remote_server_settings", {}
-                    )
-                    default_url = remote_settings.get(
-                        "server_url",
-                        "http://127.0.0.1:8000",
-                    )
-                    default_api_key = remote_settings.get("api_key", "")
-                    dialog = RemoteServerDialog(
-                        self, default_url, default_api_key
-                    )
-
-                    if dialog.exec_() == QDialog.Accepted:
-                        new_url = dialog.get_server_url()
-                        new_api_key = dialog.get_api_key()
-                        if new_url:
-                            self.model_manager.update_model_config(
-                                config_path, "server_url", new_url
-                            )
-                        self.model_manager.update_model_config(
-                            config_path, "api_key", new_api_key
-                        )
-                        if not hasattr(self.parent, "_config"):
-                            self.parent._config = {}
-                        if "remote_server_settings" not in self.parent._config:
-                            self.parent._config["remote_server_settings"] = {}
-                        if new_url:
-                            self.parent._config["remote_server_settings"][
-                                "server_url"
-                            ] = new_url
-                        self.parent._config["remote_server_settings"][
-                            "api_key"
-                        ] = new_api_key
-                    else:
-                        return
-                except Exception as e:
-                    logger.error(
-                        f"Failed to process remote_server config: {e}"
-                    )
-                    return
+        if not self._configure_remote_server_model(model_name):
+            return
 
         if model_name == "load_custom_model":
             # Unload current model first
@@ -765,7 +908,7 @@ class AutoLabelingWidget(QWidget):
             else:
                 initial_iou_value = 0.0
                 self.edit_iou.setValue(initial_iou_value)
-        except Exception as _:
+        except Exception:
             initial_iou_value = 0.0
             self.edit_iou.setValue(initial_iou_value)
 
@@ -788,7 +931,7 @@ class AutoLabelingWidget(QWidget):
             else:
                 initial_conf_value = 0.0
                 self.edit_conf.setValue(initial_conf_value)
-        except Exception as _:
+        except Exception:
             initial_conf_value = 0.0
             self.edit_conf.setValue(initial_conf_value)
 
@@ -808,6 +951,7 @@ class AutoLabelingWidget(QWidget):
             self.update_groundingdino_mode_ui()
         elif model_config.get("type") == "remote_server":
             self.update_remote_server_mode_ui()
+        self.refresh_continuous_run_availability()
 
     def update_upn_mode_ui(self):
         """Update UPN mode combobox to reflect current backend state"""
