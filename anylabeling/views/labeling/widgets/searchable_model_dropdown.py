@@ -346,7 +346,11 @@ class SearchableModelDropdownPopup(QWidget):
                 continue
 
             provider_section = ProviderSection(provider)
-            self.container_layout.addWidget(provider_section)
+            if provider == "Custom":
+                # Pin custom models above favorites and built-in providers.
+                self.container_layout.insertWidget(0, provider_section)
+            else:
+                self.container_layout.addWidget(provider_section)
 
             for model_name, model_data in models.items():
                 model_item = ModelItem(model_name, model_data)
@@ -358,7 +362,10 @@ class SearchableModelDropdownPopup(QWidget):
             separator = QFrame()
             separator.setFrameShape(QFrame.HLine)
             separator.setFrameShadow(QFrame.Plain)
-            self.container_layout.addWidget(separator)
+            if provider == "Custom":
+                self.container_layout.insertWidget(1, separator)
+            else:
+                self.container_layout.addWidget(separator)
 
         # Add stretch at the end to push content to the top
         self.container_layout.addStretch()
