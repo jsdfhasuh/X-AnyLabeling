@@ -62,6 +62,7 @@ from .utils.auto_labeling_commit_bridge import (
     AnnotationCommitBridgeV1,
 )
 from .utils.auto_labeling_i18n import auto_labeling_text_v1
+from .utils.empty_annotation import EmptyAnnotationController
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -472,6 +473,10 @@ class LabelingWidget(LabelDialog):
             self.tr("Save labels to a different file"),
             enabled=False,
         )
+        self.empty_annotation_controller = EmptyAnnotationController(
+            self, shortcuts
+        )
+        confirm_empty_next = self.empty_annotation_controller.action
         run_all_images = action(
             self.tr("Auto Run"),
             lambda: utils.run_all_images(self),
@@ -1551,6 +1556,7 @@ class LabelingWidget(LabelDialog):
             save_with_image_data=save_with_image_data,
             change_output_dir=change_output_dir,
             save=save,
+            confirm_empty_next=confirm_empty_next,
             save_as=save_as,
             open=open_,
             close=close,
@@ -1665,6 +1671,7 @@ class LabelingWidget(LabelDialog):
                 openvideo,
                 opendir,
                 save,
+                confirm_empty_next,
                 save_as,
                 close,
             ),
@@ -1776,6 +1783,7 @@ class LabelingWidget(LabelDialog):
                 toggle_compare_view,
                 self.menus.recent_files,
                 save,
+                confirm_empty_next,
                 save_as,
                 save_auto,
                 change_output_dir,
@@ -1942,6 +1950,7 @@ class LabelingWidget(LabelDialog):
             open_next_image,
             open_prev_image,
             save,
+            confirm_empty_next,
             delete_file,
             None,
             create_mode,
@@ -2274,6 +2283,7 @@ class LabelingWidget(LabelDialog):
         self.set_text_editing(False)
 
         QtCore.QTimer.singleShot(100, self.restore_navigator_state)
+        self.empty_annotation_controller.start()
 
     def restore_navigator_state(self) -> None:
         try:
@@ -2630,6 +2640,9 @@ class LabelingWidget(LabelDialog):
 
     def set_clean(self):
         self.dirty = False
+        controller = getattr(self, "empty_annotation_controller", None)
+        if controller is not None:
+            controller.schedule_status_refresh()
         self.actions.save.setEnabled(False)
         self.actions.union_selection.setEnabled(False)
         self.actions.create_mode.setEnabled(True)
@@ -5107,6 +5120,10 @@ class LabelingWidget(LabelDialog):
     def set_auto_labeling_host_context(self, context):
         context = validate_auto_labeling_host_context(context)
         self.auto_labeling_host_context = context
+        controller = getattr(self, "empty_annotation_controller", None)
+        if controller is not None:
+            controller.configure_shortcut()
+            controller.schedule_status_refresh()
         set_global_auto_labeling_host_context(context)
         auto_widget = getattr(self, "auto_labeling_widget", None)
         if auto_widget is not None:

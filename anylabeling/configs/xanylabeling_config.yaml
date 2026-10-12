@@ -123,6 +123,7 @@ shortcuts:
   open_classifier: Ctrl+3
   quit: Ctrl+Q
   save: Ctrl+S
+  confirm_empty_next: Alt+N
   save_as: Ctrl+Shift+S
   save_to: null
   delete_file: Ctrl+Delete
