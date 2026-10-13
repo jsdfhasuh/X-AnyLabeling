@@ -509,10 +509,12 @@ class AutoLabelingWidget(QWidget):
 
         try:
             local_model_data = load_json(_MODELS_CONFIG_PATH)["models_data"]
-            for model_name, model_dict in local_model_data["Custom"].items():
+            for model_name, model_dict in local_model_data.get(
+                "Custom", {}
+            ).items():
                 if model_name == "load_custom_model":
                     continue
-                elif not os.path.exists(model_dict["config_path"]):
+                elif not os.path.isfile(model_dict.get("config_path", "")):
                     continue
 
                 if not model_name.startswith("_custom_"):
@@ -528,6 +530,7 @@ class AutoLabelingWidget(QWidget):
                 self.model_info[model_name] = {
                     "display_name": model_dict["display_name"],
                     "config_path": model_dict["config_path"],
+                    "is_custom_model": True,
                 }
 
         except Exception:
@@ -536,31 +539,33 @@ class AutoLabelingWidget(QWidget):
         model_list = self.model_manager.get_model_configs()
         for model_dict in model_list:
             model_name = model_dict["name"]
-            if model_dict.get("is_custom_model", False):
+            source_provider = model_dict.get("provider", "Others")
+            is_custom_model = model_dict.get("is_custom_model", False)
+            if is_custom_model or source_provider.casefold() == "custom":
                 provider_name = "Custom"
             else:
-                provider_name = model_dict.get("provider", "Others")
+                provider_name = source_provider
 
             if provider_name not in model_data:
                 model_data[provider_name] = {}
 
-            if (
-                provider_name in local_model_data
-                and model_name in local_model_data[provider_name]
-            ):
-                local_model_data[provider_name][model_name]["selected"] = False
-                model_data[provider_name].update(
-                    local_model_data[provider_name]
+            cached_model = local_model_data.get(provider_name, {}).get(
+                model_name
+            )
+            if cached_model is None:
+                cached_model = local_model_data.get(source_provider, {}).get(
+                    model_name, {}
                 )
-            else:
-                model_data[provider_name][model_name] = {
-                    "selected": False,
-                    "favorite": False,
-                    "display_name": model_dict["display_name"],
-                }
+            model_data[provider_name][model_name] = {
+                **cached_model,
+                "selected": False,
+                "favorite": cached_model.get("favorite", False),
+                "display_name": model_dict["display_name"],
+            }
 
             self.model_info[model_name] = {
                 "display_name": model_dict["display_name"],
+                "is_custom_model": is_custom_model,
                 "config_path": (
                     None
                     if model_name == "load_custom_model"
@@ -686,6 +691,7 @@ class AutoLabelingWidget(QWidget):
                 self.model_info[config_info["name"]] = {
                     "display_name": config_info["display_name"],
                     "config_path": config_file,
+                    "is_custom_model": True,
                 }
 
                 # update model_data
@@ -742,7 +748,8 @@ class AutoLabelingWidget(QWidget):
         self.model_selection_button.setEnabled(False)
         self.hide_labeling_widgets()
 
-        if provider == "Custom":
+        # Display grouping must not change the model's loading route.
+        if self.model_info[model_name].get("is_custom_model", False):
             self.model_manager.load_custom_model(
                 self.model_info[model_name]["config_path"]
             )
