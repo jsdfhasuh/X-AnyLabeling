@@ -7,10 +7,12 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from . import new_icon
 from .auto_labeling_commit import resolve_existing_label
+from .interaction_performance import start_gui_probe
 
 
 STATUS_ROLE = QtCore.Qt.UserRole + 41
 STATUS_TEXT = {
+    "checking": "正在核对",
     "unlabeled": "未标注",
     "annotated": "已标注",
     "confirmed_empty": "已确认无目标",
@@ -26,6 +28,53 @@ TITLE = "确认无目标并下一张"
 
 def _canonical(path):
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+
+class _StatusResult(QtCore.QObject):
+    ready = QtCore.pyqtSignal(object, object, object)
+
+
+class _StatusRead(QtCore.QRunnable):
+    def __init__(self, context, image_id, token, cached):
+        super().__init__()
+        self.context, self.image_id = context, image_id
+        self.token, self.cached = token, cached
+        self.result = _StatusResult()
+
+    def run(self):
+        value = error = None
+        try:
+            signature = getattr(
+                self.context, "annotation_display_signature", None
+            )
+            before = signature(self.image_id) if callable(signature) else None
+            if (
+                before is not None
+                and self.cached is not None
+                and self.cached.get("signature") == before
+            ):
+                value = self.cached
+            else:
+                reader = getattr(
+                    self.context, "read_annotation_display_snapshot", None
+                )
+                if callable(reader):
+                    value = reader(self.image_id)
+                else:
+                    value = dict(
+                        status=self.context.read_annotation_display_status(
+                            self.image_id
+                        )
+                    )
+                after = (
+                    signature(self.image_id) if callable(signature) else None
+                )
+                if before != after:
+                    raise OSError("Annotation changed during display read")
+                value = dict(value, signature=after)
+        except Exception as exc:
+            error = exc
+        self.result.ready.emit(self.token, value, error)
 
 
 class AnnotationStatusDelegate(QtWidgets.QStyledItemDelegate):
@@ -49,6 +98,12 @@ class EmptyAnnotationController(QtCore.QObject):
         self._refresh_scheduled = False
         self._record_key = None
         self._record_value = None
+        self._version = 0
+        self._cache = None
+        self._cache_key = None
+        self._status_task = None
+        self._pending_status = None
+        self._validate_scheduled = False
         self.action = QtWidgets.QAction(new_icon("done"), TITLE, widget)
         self.action.setObjectName("confirm_empty_next")
         self.action.setAutoRepeat(False)
@@ -71,6 +126,11 @@ class EmptyAnnotationController(QtCore.QObject):
         # This timer checks only in-memory UI state, never files or stores.
         self.timer.timeout.connect(self.refresh_action)
         self.timer.start()
+        self.verify_timer = QtCore.QTimer(self)
+        self.verify_timer.setInterval(2000)
+        self.verify_timer.timeout.connect(self._verify_visible_status)
+        self.verify_timer.start()
+        self._diagnostic_probe = start_gui_probe(self)
         self.configure_shortcut()
         self.refresh_action()
 
@@ -198,6 +258,10 @@ class EmptyAnnotationController(QtCore.QObject):
 
     def eventFilter(self, watched, event):
         kind = event.type()
+        if (kind == QtCore.QEvent.WindowActivate
+                and watched is self.widget.window()):
+            self.invalidate_status()
+            self.schedule_status_refresh()
         if watched is self.action and kind == QtCore.QEvent.Shortcut:
             if (
                 self._text_input_active()
@@ -223,7 +287,17 @@ class EmptyAnnotationController(QtCore.QObject):
                 return True
         return super().eventFilter(watched, event)
 
-    def schedule_status_refresh(self):
+    def invalidate_status(self):
+        self._version += 1
+        self._cache = self._cache_key = None
+        self._pending_status = None
+
+    def _verify_visible_status(self):
+        if self.widget.isVisible():
+            self.schedule_status_refresh(validate=True)
+
+    def schedule_status_refresh(self, validate=False):
+        self._validate_scheduled = self._validate_scheduled or validate
         if not self._refresh_scheduled:
             self._refresh_scheduled = True
             QtCore.QTimer.singleShot(0, self.refresh_current_status)
@@ -238,6 +312,7 @@ class EmptyAnnotationController(QtCore.QObject):
 
     def refresh_current_status(self):
         self._refresh_scheduled = False
+        validate, self._validate_scheduled = self._validate_scheduled, False
         widget = self.widget
         context = getattr(widget, "auto_labeling_host_context", None)
         if not getattr(context, "confirm_empty_annotations_enabled", False):
@@ -246,16 +321,87 @@ class EmptyAnnotationController(QtCore.QObject):
         record = self._record()
         if record is None or not callable(reader):
             return
-        try:
-            status = reader(record.image_id)
-        except Exception as exc:
-            from ..logger import logger
-
-            logger.warning("Cannot read annotation status: %s", exc)
-            status = "recovery"
         if getattr(widget, "auto_labeling_commit_blocked", False):
-            status = "recovery"
-        self.set_row_status(widget.filename, status)
+            self.set_row_status(widget.filename, "recovery")
+            self.refresh_action()
+            return
+        key = self._status_key(context, record)
+        if self._cache_key == key and self._cache is not None and not validate:
+            self.set_row_status(widget.filename, self._cache["status"])
+            self.refresh_action()
+            return
+        request = (
+            context, record.image_id, key,
+            self._cache if self._cache_key == key else None,
+        )
+        if self._cache_key != key:
+            self.set_row_status(widget.filename, "checking")
+        if self._status_task is not None:
+            if self._status_task.token != key:
+                self._pending_status = request
+            self.refresh_action()
+            return
+        self._start_status_read(request)
+        self.refresh_action()
+
+    def _status_key(self, context, record):
+        return (id(context), getattr(context, "project_id", None),
+                getattr(context, "active_session_id", None), record.image_id,
+                self.widget.filename, self._version,
+                getattr(self.widget, "_loaded_label_document_digest", None))
+
+    def _start_status_read(self, request):
+        self._status_task = _StatusRead(*request)
+        self._status_task.result.ready.connect(
+            self._status_ready, QtCore.Qt.QueuedConnection
+        )
+        QtCore.QThreadPool.globalInstance().start(self._status_task)
+
+    @QtCore.pyqtSlot(object, object, object)
+    def _status_ready(self, token, value, error):
+        self._status_task = None
+        context = getattr(self.widget, "auto_labeling_host_context", None)
+        record = self._record()
+        if record is not None and token == self._status_key(context, record):
+            if error is not None:
+                from ..logger import logger
+                logger.warning("Cannot read annotation status: %s", error)
+                self._cache = self._cache_key = None
+                status = "recovery"
+            else:
+                if (value.get("document_digest") is not None
+                        and token[-1] is not None
+                        and value["document_digest"] != token[-1]):
+                    value = dict(value, status="stale")
+                self._cache_key, self._cache = token, value
+                status = value["status"]
+            if getattr(self.widget, "auto_labeling_commit_blocked", False):
+                status = "recovery"
+            self.set_row_status(self.widget.filename, status)
+            self.refresh_action()
+        pending, self._pending_status = self._pending_status, None
+        if (
+            pending is not None
+            and record is not None
+            and pending[2] == self._status_key(context, record)
+        ):
+            self._start_status_read(pending)
+
+    def accept_checkpoint(self, context, image_path, snapshot):
+        if context is not getattr(
+            self.widget, "auto_labeling_host_context", None
+        ):
+            return
+        self.invalidate_status()
+        self.set_row_status(image_path, snapshot["status"])
+        record = self._record()
+        if (
+            record is not None
+            and record.image_id == snapshot["image_id"]
+            and image_path == self.widget.filename
+        ):
+            self._cache_key = self._status_key(context, record)
+            self._cache = dict(snapshot, signature=None)
         self.refresh_action()
 
     def confirm(self, _checked=False):
@@ -290,7 +436,9 @@ class EmptyAnnotationController(QtCore.QObject):
             ):
                 widget.status("空标注提交尚未确认，请检查标注状态")
                 return False
-            self.refresh_current_status()
+            # The action just performed a fresh authoritative read above.
+            self.invalidate_status()
+            self.set_row_status(original, "confirmed_empty")
             index = widget.fn_to_index.get(str(original))
             if index is None or index + 1 >= widget.file_list_widget.count():
                 widget.status("已确认无目标，当前已是最后一张")

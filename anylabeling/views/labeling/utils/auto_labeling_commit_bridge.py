@@ -2,6 +2,9 @@
 
 import copy
 import os
+from contextlib import nullcontext
+
+from .interaction_performance import timed
 
 from .auto_labeling_commit import (
     atomic_delete_label_document,
@@ -49,6 +52,9 @@ class AnnotationCommitBridgeV1:
         return copy.deepcopy(self._pending_commit)
 
     def record_loaded_label(self, label_path):
+        controller = getattr(self.widget, "empty_annotation_controller", None)
+        if controller is not None:
+            controller.invalidate_status()
         path = _canonical(label_path)
         current = resolve_existing_label(path)
         self.widget._loaded_label_path = path
@@ -118,11 +124,57 @@ class AnnotationCommitBridgeV1:
         return None
 
     def authoritative_label_path(self, image_path):
+        context = getattr(self.widget, "auto_labeling_host_context", None)
+        if context is not None and hasattr(context, "annotation_item_store"):
+            record = context.image_records_by_path.get(_canonical(image_path))
+            if record is None:
+                raise AnnotationCommitBridgeError(
+                    "manual_save_image_identity_missing"
+                )
+            # Routing only; prepare still reads the item and checks CAS.
+            return _canonical(
+                _record_value(record, "canonical_session_label_path")
+            )
         target = self._target(image_path)
         return None if target is None else target["label_path"]
 
+    def persistence_scope(self):
+        context = getattr(self.widget, "auto_labeling_host_context", None)
+        scope = getattr(context, "annotation_save_scope", None)
+        return scope() if callable(scope) else nullcontext()
+
+    def _display_checkpoint(self, image_path, result, current):
+        context = getattr(self.widget, "auto_labeling_host_context", None)
+        project = getattr(
+            context, "annotation_display_snapshot_from_checkpoint", None
+        )
+        controller = getattr(self.widget, "empty_annotation_controller", None)
+        if controller is None:
+            return
+        if (
+            callable(project)
+            and isinstance(result, tuple)
+            and len(result) == 2
+        ):
+            try:
+                snapshot = project(
+                    result[1], current.presence,
+                    current.document_digest, current.semantic_digest,
+                )
+                controller.accept_checkpoint(context, image_path, snapshot)
+                return
+            except Exception:
+                # Presentation failure never changes the durable commit result.
+                pass
+        controller.invalidate_status()
+        controller.schedule_status_refresh()
+
     def _mark_failure(self, code, detail, image_path, label_path):
         self.widget.auto_labeling_commit_blocked = True
+        controller = getattr(self.widget, "empty_annotation_controller", None)
+        if controller is not None:
+            controller.invalidate_status()
+            controller.set_row_status(image_path, "recovery")
         self.widget.dirty = True
         save_action = getattr(
             getattr(self.widget, "actions", None),
@@ -192,6 +244,7 @@ class AnnotationCommitBridgeV1:
             )
         )
 
+    @timed("annotation.prepare")
     def prepare_saved_label(
         self,
         writer_kind,
@@ -332,6 +385,7 @@ class AnnotationCommitBridgeV1:
         self._clear_failure()
         return result
 
+    @timed("annotation.checkpoint")
     def publish_saved_label(self, writer_kind, image_path, label_path):
         if writer_kind not in {"MANUAL_SAVE", "AUTO_SAVE"}:
             raise AnnotationCommitBridgeError("invalid_manual_writer_kind")
@@ -373,6 +427,7 @@ class AnnotationCommitBridgeV1:
             self.widget._loaded_label_path = _canonical(label_path)
             self.widget._loaded_label_document_digest = current.document_digest
             self._clear_failure()
+            self._display_checkpoint(image_path, result, current)
             return result
         try:
             result = self._publish(
@@ -468,6 +523,7 @@ class AnnotationCommitBridgeV1:
                 self._mark_failure(code, exc, image_path, canonical_label)
                 raise AnnotationCommitBridgeError(code, exc) from exc
             self._clear_failure()
+            self._display_checkpoint(image_path, result, missing)
             return result
         try:
             return self._publish(

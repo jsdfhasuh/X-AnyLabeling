@@ -63,6 +63,7 @@ from .utils.auto_labeling_commit_bridge import (
 )
 from .utils.auto_labeling_i18n import auto_labeling_text_v1
 from .utils.empty_annotation import EmptyAnnotationController
+from .utils.interaction_performance import timed
 from .widgets import (
     AboutDialog,
     AutoLabelingWidget,
@@ -2599,6 +2600,9 @@ class LabelingWidget(LabelDialog):
         utils.add_actions(self.menus.edit, actions + self.actions.editMenu)
 
     def set_dirty(self):
+        controller = getattr(self, "empty_annotation_controller", None)
+        if controller is not None:
+            controller.invalidate_status()
         # Even if we autosave the file, we keep the ability to undo
         self.actions.undo.setEnabled(self.canvas.is_shape_restorable)
 
@@ -3956,7 +3960,7 @@ class LabelingWidget(LabelDialog):
         else:
             self.hide_attributes_panel()
 
-    def add_label(self, shape, update_last_label=True):
+    def add_label(self, shape, update_last_label=True, refresh_filters=True):
         if shape.group_id is None:
             text = shape.label
         else:
@@ -4000,8 +4004,9 @@ class LabelingWidget(LabelDialog):
         color = shape.fill_color.getRgb()[:3]
         label_list_item.setText("{}".format(html.escape(text)))
         label_list_item.setBackground(QtGui.QColor(*color, LABEL_OPACITY))
-        self.update_combo_box()
-        self.update_gid_box()
+        if refresh_filters:
+            self.update_combo_box()
+            self.update_gid_box()
 
     def load_labels(self, labels, clear_existing=True):
         """
@@ -4069,11 +4074,24 @@ class LabelingWidget(LabelDialog):
         self.update_gid_box()
 
     def load_shapes(self, shapes, replace=True, update_last_label=True):
+        previous_selection_slot = self._no_selection_slot
         self._no_selection_slot = True
-        for shape in shapes:
-            self.add_label(shape, update_last_label=update_last_label)
-        self.label_list.clearSelection()
-        self._no_selection_slot = False
+        try:
+            added = False
+            for shape in shapes:
+                self.add_label(
+                    shape,
+                    update_last_label=update_last_label,
+                    refresh_filters=False,
+                )
+                added = True
+            # Rebuilding filters emits whole-list visibility updates.
+            if added:
+                self.update_combo_box()
+                self.update_gid_box()
+            self.label_list.clearSelection()
+        finally:
+            self._no_selection_slot = previous_selection_slot
         self.canvas.load_shapes(shapes, replace=replace)
         self.apply_label_visibility()
 
@@ -4124,6 +4142,7 @@ class LabelingWidget(LabelDialog):
         unique_gid_list.sort()
         self.gid_filter_combobox.update_items(unique_gid_list)
 
+    @timed("annotation.save")
     def save_labels(self, filename, writer_kind="MANUAL_SAVE"):
         label_file = LabelFile()
         # Get current shapes
@@ -4152,35 +4171,36 @@ class LabelingWidget(LabelDialog):
             if osp.dirname(filename) and not osp.exists(osp.dirname(filename)):
                 os.makedirs(osp.dirname(filename))
 
-            label_file.save(
-                filename=filename,
-                shapes=shapes,
-                image_path=image_path,
-                image_source_path=self.image_path,
-                image_data=image_data,
-                image_height=self.image.height(),
-                image_width=self.image.width(),
-                other_data=self.other_data,
-                flags=flags,
-                pre_document_digest=(
-                    self.annotation_commit_bridge.pre_document_digest(filename)
-                ),
-                before_write=lambda document, current: (
-                    self.annotation_commit_bridge.prepare_saved_label(
-                        writer_kind,
-                        self.filename,
-                        filename,
-                        document,
-                        current,
-                    )
-                ),
-            )
-            self.label_file = label_file
-            self.annotation_commit_bridge.publish_saved_label(
-                writer_kind,
-                self.filename,
-                filename,
-            )
+            with self.annotation_commit_bridge.persistence_scope():
+                label_file.save(
+                    filename=filename,
+                    shapes=shapes,
+                    image_path=image_path,
+                    image_source_path=self.image_path,
+                    image_data=image_data,
+                    image_height=self.image.height(),
+                    image_width=self.image.width(),
+                    other_data=self.other_data,
+                    flags=flags,
+                    pre_document_digest=(
+                        self.annotation_commit_bridge.pre_document_digest(filename)
+                    ),
+                    before_write=lambda document, current: (
+                        self.annotation_commit_bridge.prepare_saved_label(
+                            writer_kind,
+                            self.filename,
+                            filename,
+                            document,
+                            current,
+                        )
+                    ),
+                )
+                self.label_file = label_file
+                self.annotation_commit_bridge.publish_saved_label(
+                    writer_kind,
+                    self.filename,
+                    filename,
+                )
             items = self.file_list_widget.findItems(
                 self.image_path, Qt.MatchExactly
             )
@@ -4208,6 +4228,17 @@ class LabelingWidget(LabelDialog):
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
             return False
+        except Exception as exc:
+            logger.exception("Annotation persistence failed")
+            self.annotation_commit_bridge.mark_write_failure(
+                exc, self.filename, filename
+            )
+            self.dirty = True
+            self.actions.save.setEnabled(True)
+            self.error_message(
+                self.tr("Error saving label data"), self.tr("<b>%s</b>") % exc
+            )
+            return False
 
     def duplicate_selected_shape(self):
         added_shapes = self.canvas.duplicate_selected_shapes()
@@ -4216,6 +4247,7 @@ class LabelingWidget(LabelDialog):
             self.add_label(shape)
         self.set_dirty()
 
+    @timed("annotation.paste")
     def paste_selected_shape(self):
         if self._config["system_clipboard"]:
             clipboard = QtWidgets.QApplication.clipboard()
@@ -4868,6 +4900,7 @@ class LabelingWidget(LabelDialog):
         if next_files:
             self.next_files_changed.emit(next_files)
 
+    @timed("annotation.load")
     def load_file(self, filename=None):  # noqa: C901
         """Load the specified file, or the last opened file if None."""
 
@@ -5122,6 +5155,7 @@ class LabelingWidget(LabelDialog):
         self.auto_labeling_host_context = context
         controller = getattr(self, "empty_annotation_controller", None)
         if controller is not None:
+            controller.invalidate_status()
             controller.configure_shortcut()
             controller.schedule_status_refresh()
         set_global_auto_labeling_host_context(context)
@@ -5431,6 +5465,9 @@ class LabelingWidget(LabelDialog):
     def clear_auto_labeling_host_context(self):
         context = self.auto_labeling_host_context
         self.auto_labeling_host_context = None
+        controller = getattr(self, "empty_annotation_controller", None)
+        if controller is not None:
+            controller.invalidate_status()
         self._session_pending_review_count = 0
         self._historical_pending_review_count = 0
         refresh_pending = getattr(

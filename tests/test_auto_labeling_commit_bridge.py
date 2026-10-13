@@ -268,6 +268,83 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
         )
         return save_action
 
+    def test_scope_acquire_failure_does_not_write_or_clear_dirty(self):
+        for error in (RuntimeError("scope busy"), PermissionError("denied")):
+            with self.subTest(error=error):
+                bridge, sink = self._v2_bridge()
+                self._configure_save_surface()
+                self.widget.annotation_commit_bridge = bridge
+                self.widget.dirty = True
+                scope = mock.MagicMock()
+                scope.__enter__.side_effect = error
+                self.widget.auto_labeling_host_context.annotation_save_scope = (
+                    lambda: scope
+                )
+                original = self.label_path.read_bytes()
+
+                self.assertFalse(
+                    LabelingWidget._save_file(
+                        self.widget, str(self.label_path)
+                    )
+                )
+                self.assertEqual(self.label_path.read_bytes(), original)
+                sink.prepare.assert_not_called()
+                sink.checkpoint.assert_not_called()
+                self.widget.set_clean.assert_not_called()
+                self.widget.error_message.assert_called_once()
+                self.assertTrue(self.widget.dirty)
+                self.assertIsNone(bridge.pending_commit)
+
+    def test_scope_release_failure_does_not_report_success(self):
+        bridge, sink = self._v2_bridge()
+        self._configure_save_surface()
+        self.widget.annotation_commit_bridge = bridge
+        self.widget.dirty = True
+        scope = mock.MagicMock()
+        scope.__exit__.side_effect = OSError("release failed")
+        self.widget.auto_labeling_host_context.annotation_save_scope = (
+            lambda: scope
+        )
+
+        self.assertFalse(
+            LabelingWidget._save_file(self.widget, str(self.label_path))
+        )
+        sink.checkpoint.assert_called_once()
+        self.widget.set_clean.assert_not_called()
+        self.widget.error_message.assert_called_once()
+        self.assertTrue(self.widget.dirty)
+        self.assertIsNone(bridge.pending_commit)
+        self.assertEqual(
+            json.loads(self.label_path.read_text())["description"],
+            "saved through widget",
+        )
+
+    def test_scope_release_error_preserves_failed_write_intent(self):
+        bridge, sink = self._v2_bridge()
+        self._configure_save_surface()
+        self.widget.annotation_commit_bridge = bridge
+        scope = mock.MagicMock()
+        scope.__exit__.side_effect = OSError("release failed")
+        self.widget.auto_labeling_host_context.annotation_save_scope = (
+            lambda: scope
+        )
+        original = self.label_path.read_bytes()
+        with mock.patch(
+            "anylabeling.views.labeling.utils.auto_labeling_commit.os.replace",
+            side_effect=OSError("write failed"),
+        ):
+            self.assertFalse(
+                LabelingWidget.save_labels(
+                    self.widget, str(self.label_path)
+                )
+            )
+        self.assertEqual(self.label_path.read_bytes(), original)
+        sink.checkpoint.assert_not_called()
+        self.assertIsNotNone(bridge.pending_commit)
+        self.assertTrue(self.widget.auto_labeling_commit_blocked)
+        self.assertTrue(self.widget.dirty)
+        self.widget.error_message.assert_called_once()
+
     def test_manual_and_auto_save_publish_one_reread_event(self):
         self.assertEqual(
             self.bridge.authoritative_label_path(self.image_path),

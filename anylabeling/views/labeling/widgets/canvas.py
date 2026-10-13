@@ -3037,12 +3037,19 @@ class Canvas(
         self.pixmap = pixmap
         if clear_shapes:
             self.shapes = []
+            self.visible.clear()
         self.update()
 
     def load_shapes(self, shapes, replace=True):
         """Load shapes"""
         if replace:
             self.shapes = list(shapes)
+            # Visibility must not keep replaced/previous-image shapes alive.
+            self.visible = {
+                shape: self.visible[shape]
+                for shape in self.shapes
+                if shape in self.visible
+            }
         else:
             self.shapes.extend(shapes)
         self.store_shapes()
@@ -3083,6 +3090,7 @@ class Canvas(
         self.restore_cursor()
         self.pixmap = None
         self.shapes_backups = []
+        self.visible.clear()
         self.is_move_editing = False
         self.compare_pixmap = None
         self.update()
