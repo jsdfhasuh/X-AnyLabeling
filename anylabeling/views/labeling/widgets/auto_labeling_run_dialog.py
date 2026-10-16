@@ -2,7 +2,7 @@
 
 import os
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 from anylabeling.services.auto_labeling.prediction_runner import (
     PredictionRunner,
@@ -88,7 +88,29 @@ def continuous_auto_labeling_settings_v1(config):
     return result
 
 
-class ContinuousRunSetupDialog(QtWidgets.QDialog):
+class _LocalizedRunView:
+    def text(self, key, **values):
+        return auto_labeling_text_v1(key, config=self._text_config, **values)
+
+
+class _ModelNameLabel(QtWidgets.QLabel):
+    def set_model_name(self, name):
+        self._model_name = str(name)
+        self.setToolTip(self._model_name)
+        self._update_text()
+
+    def _update_text(self):
+        self.setText(self.fontMetrics().elidedText(
+            getattr(self, "_model_name", ""), QtCore.Qt.ElideMiddle,
+            max(0, self.contentsRect().width()),
+        ))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_text()
+
+
+class ContinuousRunSetupDialog(_LocalizedRunView, QtWidgets.QDialog):
     """Collect the unified Fast or Visible sequence options."""
 
     def __init__(
@@ -101,9 +123,14 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
         parent=None,
     ):
         super().__init__(parent)
+        self._text_config = getattr(parent, "_config", None)
+        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.GeneralFont)
+        font.setPointSize(10)
+        self.setFont(font)
         self.summary = dict(summary)
-        self.setWindowTitle(auto_labeling_text_v1("continuous_title"))
-        self.setMinimumWidth(560)
+        self.setWindowTitle(self.text("continuous_title"))
+        self.setMinimumWidth(480)
+        self.resize(560, 460)
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -114,20 +141,26 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
         self.title_label.setStyleSheet("font-size: 16px; font-weight: 600;")
         layout.addWidget(self.title_label)
 
-        self.note_label = QtWidgets.QLabel()
+        self.note_label = QtWidgets.QLabel(self)
         self.note_label.setWordWrap(True)
-        layout.addWidget(self.note_label)
+        self.note_label.hide()
 
         form = QtWidgets.QFormLayout()
         form.setHorizontalSpacing(18)
         form.setVerticalSpacing(10)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+        self.mode_combo = QtWidgets.QComboBox()
+        self.mode_combo.addItem(self.text("visible_mode"), "VISIBLE")
+        self.mode_combo.addItem(self.text("fast_mode"), "FAST")
+        form.addRow(self.text("run_mode"), self.mode_combo)
 
         self.range_combo = QtWidgets.QComboBox()
         self.range_combo.addItem(
-            auto_labeling_text_v1("all_images"), "ALL_IMAGES"
+            self.text("all_images"), "ALL_IMAGES"
         )
         self.range_combo.addItem(
-            auto_labeling_text_v1("current_to_end"), "CURRENT_TO_END"
+            self.text("current_to_end"), "CURRENT_TO_END"
         )
         values = dict(_DEFAULT_SEQUENCE_SETTINGS)
         if type(initial_values) is dict:
@@ -140,30 +173,30 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
         self.range_combo.setCurrentIndex(
             max(0, self.range_combo.findData(values["range"]))
         )
-        form.addRow(auto_labeling_text_v1("base_range"), self.range_combo)
+        form.addRow(self.text("base_range"), self.range_combo)
 
         self.filter_combo = QtWidgets.QComboBox()
-        self.filter_combo.addItem(auto_labeling_text_v1("all"), "ALL")
+        self.filter_combo.addItem(self.text("all"), "ALL")
         self.filter_combo.addItem(
-            auto_labeling_text_v1("only_without_valid_annotation"),
+            self.text("only_without_valid_annotation"),
             "ONLY_WITHOUT_VALID_ANNOTATION",
         )
         self.filter_combo.setCurrentIndex(
             max(0, self.filter_combo.findData(values["filter"]))
         )
-        form.addRow(auto_labeling_text_v1("filter"), self.filter_combo)
+        form.addRow(self.text("filter"), self.filter_combo)
 
         self.write_policy_combo = QtWidgets.QComboBox()
         for text, value in (
-            (auto_labeling_text_v1("skip_existing"), "SKIP_EXISTING"),
-            (auto_labeling_text_v1("force_replace"), "FORCE_REPLACE"),
+            (self.text("skip_existing"), "SKIP_EXISTING"),
+            (self.text("force_replace"), "FORCE_REPLACE"),
         ):
             self.write_policy_combo.addItem(text, value)
         self.write_policy_combo.setCurrentIndex(
             max(0, self.write_policy_combo.findData(values["write_policy"]))
         )
         form.addRow(
-            auto_labeling_text_v1("write_policy"),
+            self.text("write_policy"),
             self.write_policy_combo,
         )
 
@@ -171,23 +204,39 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
         self.delay_spin.setRange(0.0, 60.0)
         self.delay_spin.setSingleStep(0.5)
         self.delay_spin.setDecimals(1)
-        self.delay_spin.setSuffix(auto_labeling_text_v1("seconds_suffix"))
+        self.delay_spin.setSuffix(self.text("seconds_suffix"))
         self.delay_spin.setValue(float(values["delay_seconds"]))
-        form.addRow(auto_labeling_text_v1("dwell_time"), self.delay_spin)
+        form.addRow(self.text("dwell_time"), self.delay_spin)
+        self.model_label = _ModelNameLabel()
+        self.model_label.setTextFormat(QtCore.Qt.PlainText)
+        self.model_label.setMinimumWidth(0)
+        model_policy = self.model_label.sizePolicy()
+        model_policy.setHorizontalPolicy(QtWidgets.QSizePolicy.Ignored)
+        self.model_label.setSizePolicy(model_policy)
+        if isinstance(model_summary, dict):
+            self.model_label.set_model_name(model_summary["model_name"])
+            form.addRow(self.text("model_name"), self.model_label)
+            for key, field in (("confidence", "confidence_threshold"),
+                               ("overlap", "iou_threshold")):
+                value = model_summary.get(field)
+                label = QtWidgets.QLabel(
+                    "-" if value is None else f"{value * 100:g}%"
+                )
+                label.setToolTip(self.text(key + "_help"))
+                form.addRow(self.text(key), label)
+        else:
+            self.model_label.set_model_name(model_summary)
+            form.addRow(self.text("model_and_parameters"), self.model_label)
         form.addRow(
-            auto_labeling_text_v1("model_and_parameters"),
-            QtWidgets.QLabel(model_summary),
-        )
-        form.addRow(
-            auto_labeling_text_v1("workset_count"),
+            self.text("workset_count"),
             QtWidgets.QLabel(str(self.summary.get("workset_total", 0))),
         )
         form.addRow(
-            auto_labeling_text_v1("existing_annotation_count"),
+            self.text("existing_annotation_count"),
             QtWidgets.QLabel(str(self.summary.get("existing_annotation", 0))),
         )
         form.addRow(
-            auto_labeling_text_v1("host_prepare_failure"),
+            self.text("host_prepare_failure"),
             QtWidgets.QLabel(str(self.summary.get("host_prepare_failed", 0))),
         )
         layout.addLayout(form)
@@ -200,24 +249,50 @@ class ContinuousRunSetupDialog(QtWidgets.QDialog):
         self.start_button.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_MediaPlay)
         )
-        buttons.addButton(QtWidgets.QDialogButtonBox.Cancel)
+        self.start_button.setMinimumWidth(
+            max(self.start_button.fontMetrics().horizontalAdvance(self.text(key))
+                for key in ("start_fast", "start_visible"))
+            + self.start_button.iconSize().width() + 32
+        )
+        self.start_button.setMinimumHeight(32)
+        self.cancel_button = buttons.addButton(QtWidgets.QDialogButtonBox.Cancel)
+        self.cancel_button.setText(self.text("cancel"))
+        self.cancel_button.setMinimumHeight(32)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self.delay_spin.valueChanged.connect(self._sync_delay_mode)
+        self._preview_delay = (
+            self.delay_spin.value() or _DEFAULT_SEQUENCE_SETTINGS["delay_seconds"]
+        )
+        self.mode_combo.currentIndexChanged.connect(self._select_mode)
         self._sync_delay_mode(self.delay_spin.value())
 
+    def _select_mode(self):
+        self.delay_spin.setValue(
+            0.0 if self.mode_combo.currentData() == "FAST"
+            else self._preview_delay
+        )
+
     def _sync_delay_mode(self, delay):
+        visible = float(delay) > 0.0
+        if visible:
+            self._preview_delay = float(delay)
+        blocked = self.mode_combo.blockSignals(True)
+        self.mode_combo.setCurrentIndex(0 if visible else 1)
+        self.mode_combo.blockSignals(blocked)
+        self.delay_spin.setEnabled(visible)
         if float(delay) == 0.0:
-            self.title_label.setText(auto_labeling_text_v1("fast_mode"))
-            self.note_label.setText(auto_labeling_text_v1("fast_description"))
-            self.start_button.setText(auto_labeling_text_v1("start_fast"))
+            self.note_label.setText(self.text("fast_description"))
+            self.start_button.setText(self.text("start_fast"))
         else:
-            self.title_label.setText(auto_labeling_text_v1("visible_mode"))
             self.note_label.setText(
-                auto_labeling_text_v1("visible_description")
+                self.text("visible_description")
             )
-            self.start_button.setText(auto_labeling_text_v1("start_visible"))
+            self.start_button.setText(self.text("start_visible"))
+        self.mode_combo.setToolTip(self.note_label.text())
+        self.delay_spin.setToolTip(self.note_label.text())
+        self.title_label.setText(self.text("continuous_title"))
 
     def selected_values(self):
         return {
@@ -241,6 +316,7 @@ class FastRunSetupDialog(ContinuousRunSetupDialog):
             **kwargs,
         )
         self.delay_spin.setEnabled(False)
+        self.mode_combo.setEnabled(False)
 
     def selected_values(self):
         values = super().selected_values()
@@ -248,7 +324,7 @@ class FastRunSetupDialog(ContinuousRunSetupDialog):
         return values
 
 
-class FastRunProgressDialog(QtWidgets.QDialog):
+class FastRunProgressDialog(_LocalizedRunView, QtWidgets.QDialog):
     pause_requested = QtCore.pyqtSignal()
     resume_requested = QtCore.pyqtSignal()
     stop_requested = QtCore.pyqtSignal()
@@ -278,12 +354,16 @@ class FastRunProgressDialog(QtWidgets.QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._text_config = getattr(parent, "_config", None)
+        font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.GeneralFont)
+        font.setPointSize(10)
+        self.setFont(font)
         self._terminal = False
         self._paused = False
         self._pause_pending = False
         self._phase = "PREPARING"
         self._positioned = False
-        self.setWindowTitle(auto_labeling_text_v1("progress_title"))
+        self.setWindowTitle(self.text("progress_title"))
         self.setMinimumWidth(520)
         self.setWindowModality(QtCore.Qt.NonModal)
 
@@ -291,7 +371,7 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
 
-        self.state_label = QtWidgets.QLabel(auto_labeling_text_v1("preparing"))
+        self.state_label = QtWidgets.QLabel(self.text("preparing"))
         self.state_label.setStyleSheet("font-weight: 600;")
         layout.addWidget(self.state_label)
         self.file_label = QtWidgets.QLabel("")
@@ -307,15 +387,15 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         layout.addWidget(self.progress_bar)
 
         timing = QtWidgets.QFormLayout()
-        suffix = auto_labeling_text_v1("seconds_suffix")
+        suffix = self.text("seconds_suffix")
         self.configured_delay_label = QtWidgets.QLabel(f"0.0{suffix}")
         self.remaining_delay_label = QtWidgets.QLabel(f"0.0{suffix}")
         timing.addRow(
-            auto_labeling_text_v1("configured_dwell_time"),
+            self.text("configured_dwell_time"),
             self.configured_delay_label,
         )
         timing.addRow(
-            auto_labeling_text_v1("remaining_dwell_time"),
+            self.text("remaining_dwell_time"),
             self.remaining_delay_label,
         )
         layout.addLayout(timing)
@@ -323,7 +403,7 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         metrics = QtWidgets.QGridLayout()
         self.metric_labels = {}
         for index, (field, text_key) in enumerate(self._METRICS):
-            name = QtWidgets.QLabel(auto_labeling_text_v1(text_key))
+            name = QtWidgets.QLabel(self.text(text_key))
             value = QtWidgets.QLabel("0")
             value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             metrics.addWidget(name, index // 2, (index % 2) * 2)
@@ -338,30 +418,30 @@ class FastRunProgressDialog(QtWidgets.QDialog):
 
         controls = QtWidgets.QHBoxLayout()
         self.pause_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("pause")
+            self.text("pause")
         )
-        self.pause_button.setToolTip(auto_labeling_text_v1("pause_tooltip"))
+        self.pause_button.setToolTip(self.text("pause_tooltip"))
         self.pause_button.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_MediaPause)
         )
-        self.stop_button = QtWidgets.QPushButton(auto_labeling_text_v1("stop"))
+        self.stop_button = QtWidgets.QPushButton(self.text("stop"))
         self.stop_button.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_MediaStop)
         )
         self.retry_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("retry_current")
+            self.text("retry_current")
         )
         self.retry_button.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
         )
         self.skip_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("skip_current")
+            self.text("skip_current")
         )
         self.review_now_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("review_now")
+            self.text("review_now")
         )
         self.review_later_button = QtWidgets.QPushButton(
-            auto_labeling_text_v1("review_later")
+            self.text("review_later")
         )
         self.retry_button.hide()
         self.skip_button.hide()
@@ -389,32 +469,32 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         elif not self._pause_pending:
             self._pause_pending = True
             self.pause_button.setEnabled(False)
-            self.state_label.setText(auto_labeling_text_v1("phase_pausing"))
+            self.state_label.setText(self.text("phase_pausing"))
             self.pause_requested.emit()
 
     def set_phase(self, phase):
         self._phase = phase
         messages = {
-            "PREPARING": auto_labeling_text_v1("preparing"),
-            "LOADING": auto_labeling_text_v1("phase_loading"),
-            "INFERENCING": auto_labeling_text_v1("phase_inferencing"),
-            "COMMITTING": auto_labeling_text_v1("phase_committing"),
-            "PRESENTING": auto_labeling_text_v1("phase_presenting"),
-            "WAITING_ERROR": auto_labeling_text_v1("phase_waiting_error"),
-            "PAUSED": auto_labeling_text_v1("phase_paused"),
-            "FINISHED": auto_labeling_text_v1("phase_finished"),
+            "PREPARING": self.text("preparing"),
+            "LOADING": self.text("phase_loading"),
+            "INFERENCING": self.text("phase_inferencing"),
+            "COMMITTING": self.text("phase_committing"),
+            "PRESENTING": self.text("phase_presenting"),
+            "WAITING_ERROR": self.text("phase_waiting_error"),
+            "PAUSED": self.text("phase_paused"),
+            "FINISHED": self.text("phase_finished"),
         }
         self._paused = phase == "PAUSED"
         if self._paused or phase == "FINISHED":
             self._pause_pending = False
         if self._pause_pending:
-            self.state_label.setText(auto_labeling_text_v1("phase_pausing"))
+            self.state_label.setText(self.text("phase_pausing"))
         else:
             self.state_label.setText(messages.get(phase, phase))
         self.pause_button.setText(
-            auto_labeling_text_v1("continue")
+            self.text("continue")
             if self._paused
-            else auto_labeling_text_v1("pause")
+            else self.text("pause")
         )
         self.pause_button.setEnabled(
             phase != "FINISHED" and not self._pause_pending
@@ -485,12 +565,12 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         self.file_label.setText(str(progress.get("current_filename", "")))
         delay = float(progress.get("delay_seconds", 0.0) or 0.0)
         remaining = float(progress.get("remaining_seconds", 0.0) or 0.0)
-        suffix = auto_labeling_text_v1("seconds_suffix")
+        suffix = self.text("seconds_suffix")
         self.configured_delay_label.setText(f"{delay:.1f}{suffix}")
         self.remaining_delay_label.setText(f"{remaining:.1f}{suffix}")
         if self._paused and delay > 0.0:
             self.state_label.setText(
-                auto_labeling_text_v1(
+                self.text(
                     "paused_remaining",
                     remaining=remaining,
                 )
@@ -498,15 +578,17 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         for field, label in self.metric_labels.items():
             value = progress.get(field, 0)
             if field == "processing_status":
-                value = auto_labeling_status_text_v1(value, "processing")
+                value = auto_labeling_status_text_v1(
+                    value, "processing", config=self._text_config,
+                )
             elif field == "completed_with_errors":
-                value = auto_labeling_boolean_text_v1(value)
+                value = auto_labeling_boolean_text_v1(value, config=self._text_config)
             label.setText(str(value))
 
     def show_waiting_error(self, error):
         code = str(error.get("error_code") or "model_prediction_failed")
         message = str(error.get("error_message") or "")
-        category = auto_labeling_error_category_v1(code)
+        category = auto_labeling_error_category_v1(code, config=self._text_config)
         detail = f"{code}\n{message}" if message else code
         self.error_label.setText(f"{category}: {detail}")
         self.error_label.show()
@@ -539,22 +621,23 @@ class FastRunProgressDialog(QtWidgets.QDialog):
             and not summary.get("completed_with_errors")
         ):
             self.state_label.setText(
-                auto_labeling_text_v1("nothing_to_process")
+                self.text("nothing_to_process")
             )
         else:
             self.state_label.setText(
-                auto_labeling_text_v1(
+                self.text(
                     "run_result",
                     status=auto_labeling_status_text_v1(
                         status,
                         "processing",
+                        config=self._text_config,
                     ),
                 )
             )
         self.pause_button.hide()
         self.retry_button.hide()
         self.skip_button.hide()
-        self.stop_button.setText(auto_labeling_text_v1("close"))
+        self.stop_button.setText(self.text("close"))
         try:
             self.stop_button.clicked.disconnect()
         except TypeError:
@@ -572,7 +655,7 @@ class FastRunProgressDialog(QtWidgets.QDialog):
         event.ignore()
 
 
-class FastRunUiSession(QtCore.QObject):
+class FastRunUiSession(_LocalizedRunView, QtCore.QObject):
     """Own one unified Fast/Visible lifecycle for a labeling widget."""
 
     setup_dialog_class = ContinuousRunSetupDialog
@@ -582,6 +665,7 @@ class FastRunUiSession(QtCore.QObject):
 
     def __init__(self, labeling_widget, auto_widget, initial_delay=0.0):
         super().__init__(auto_widget)
+        self._text_config = getattr(labeling_widget, "_config", None)
         self.labeling_widget = labeling_widget
         self.auto_widget = auto_widget
         self.initial_delay = initial_delay
@@ -653,7 +737,7 @@ class FastRunUiSession(QtCore.QObject):
         if getattr(canvas, "current", None) is not None:
             raise FastControllerError("unfinished_shape_blocks_fast_run")
         if (
-            self._resolve_dirty(auto_labeling_text_v1("start_continuous"))
+            self._resolve_dirty(self.text("start_continuous"))
             is None
         ):
             return None
@@ -681,7 +765,11 @@ class FastRunUiSession(QtCore.QObject):
         model_name = parameters.get("model_name") or parameters["model_type"]
         conf = parameters.get("confidence_threshold")
         iou = parameters.get("iou_threshold")
-        model_summary = f"{model_name} · conf={conf} · IOU={iou}"
+        model_summary = {
+            "model_name": model_name,
+            "confidence_threshold": conf,
+            "iou_threshold": iou,
+        }
         settings = continuous_auto_labeling_settings_v1(
             self.labeling_widget._config
         )
@@ -708,8 +796,8 @@ class FastRunUiSession(QtCore.QObject):
         ):
             answer = QtWidgets.QMessageBox.warning(
                 self.labeling_widget,
-                auto_labeling_text_v1("replace_confirmation_title"),
-                auto_labeling_text_v1(
+                self.text("replace_confirmation_title"),
+                self.text(
                     "replace_confirmation",
                     count=preview["existing_annotation"],
                 ),
@@ -816,7 +904,7 @@ class FastRunUiSession(QtCore.QObject):
         answer = QtWidgets.QMessageBox.question(
             self.labeling_widget,
             title,
-            auto_labeling_text_v1("dirty_current_image"),
+            self.text("dirty_current_image"),
             QtWidgets.QMessageBox.Save
             | QtWidgets.QMessageBox.Discard
             | QtWidgets.QMessageBox.Cancel,
@@ -965,7 +1053,7 @@ class FastRunUiSession(QtCore.QObject):
     def _resume(self):
         try:
             resolution = self._resolve_dirty(
-                auto_labeling_text_v1("continue_continuous")
+                self.text("continue_continuous")
             )
         except Exception as exc:  # noqa: B902
             self._show_control_failure(exc)
@@ -987,7 +1075,7 @@ class FastRunUiSession(QtCore.QObject):
         if self.controller.phase == "PAUSED":
             try:
                 resolution = self._resolve_dirty(
-                    auto_labeling_text_v1("stop_continuous")
+                    self.text("stop_continuous")
                 )
             except Exception as exc:  # noqa: B902
                 self._show_control_failure(exc)
@@ -1001,7 +1089,7 @@ class FastRunUiSession(QtCore.QObject):
         detail = str(exc)
         QtWidgets.QMessageBox.warning(
             self.labeling_widget,
-            auto_labeling_text_v1("cannot_continue"),
+            self.text("cannot_continue"),
             f"{code}\n{detail}" if detail != code else code,
         )
 
@@ -1100,7 +1188,7 @@ class FastRunUiSession(QtCore.QObject):
             self._connect_thread_cleanup()
         QtWidgets.QMessageBox.warning(
             self.labeling_widget,
-            auto_labeling_text_v1("cannot_start"),
+            self.text("cannot_start"),
             continuous_start_failure_text_v1(exc),
         )
         if self.runner is None or not self.runner.requires_safe_shutdown():

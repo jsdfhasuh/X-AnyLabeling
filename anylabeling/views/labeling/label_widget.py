@@ -61,7 +61,7 @@ from .utils.auto_labeling_commit_bridge import (
     AnnotationCommitBridgeError,
     AnnotationCommitBridgeV1,
 )
-from .utils.auto_labeling_i18n import auto_labeling_text_v1
+from .utils.auto_labeling_i18n import auto_labeling_text_v1, review_text_v1
 from .utils.empty_annotation import EmptyAnnotationController
 from .utils.interaction_performance import timed
 from .widgets import (
@@ -102,6 +102,7 @@ class LabelingWidget(LabelDialog):
 
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
     next_files_changed = QtCore.pyqtSignal(list)
+    annotation_changed = QtCore.pyqtSignal()
 
     def __init__(  # noqa: C901
         self,
@@ -2194,7 +2195,9 @@ class LabelingWidget(LabelDialog):
         self.audit_sidebar_page = QWidget()
         self.audit_sidebar_layout = QVBoxLayout(self.audit_sidebar_page)
         self.audit_sidebar_layout.setContentsMargins(0, 0, 0, 0)
-        self.audit_empty_label = QLabel(auto_labeling_text_v1("audit_empty"))
+        self.audit_empty_label = QLabel(
+            review_text_v1("empty", self._config)
+        )
         self.audit_empty_label.setWordWrap(True)
         self.audit_empty_label.setAlignment(Qt.AlignCenter)
         self.audit_open_button = QPushButton()
@@ -2621,6 +2624,7 @@ class LabelingWidget(LabelDialog):
                 and self.navigator_dialog.isVisible()
             ):
                 self.update_navigator_shapes()
+            self.annotation_changed.emit()
             return
         self.dirty = True
         self.actions.save.setEnabled(True)
@@ -2633,6 +2637,7 @@ class LabelingWidget(LabelDialog):
         if self.filename is not None:
             title = f"{title} - {self.filename}*"
         self.setWindowTitle(title)
+        self.annotation_changed.emit()
 
     def update_progress_title(self):
         title = __appname__
@@ -4248,7 +4253,7 @@ class LabelingWidget(LabelDialog):
         self.set_dirty()
 
     @timed("annotation.paste")
-    def paste_selected_shape(self):
+    def paste_selected_shape(self, _value=False):
         if self._config["system_clipboard"]:
             clipboard = QtWidgets.QApplication.clipboard()
             json_str = clipboard.text()
@@ -4962,7 +4967,10 @@ class LabelingWidget(LabelDialog):
             label_file
         ):
             try:
-                self.label_file = LabelFile(label_file, image_dir)
+                self.label_file = LabelFile(
+                    label_file, image_dir,
+                    capture_audit=getattr(self, "auto_labeling_audit_active", False),
+                )
             except LabelFileError as e:
                 self.error_message(
                     self.tr("Error opening file"),
@@ -5278,17 +5286,25 @@ class LabelingWidget(LabelDialog):
     def create_auto_labeling_audit_panel(self):
         from .widgets.auto_labeling_audit_dialog import AutoLabelingAuditPanel
 
-        return AutoLabelingAuditPanel(self.audit_sidebar_page)
+        return AutoLabelingAuditPanel(
+            self.audit_sidebar_page, config=self._config
+        )
 
     def show_auto_labeling_audit_panel(self, panel):
         self.audit_empty_label.hide()
         self.audit_open_button.hide()
-        self.audit_sidebar_layout.insertWidget(0, panel)
+        for index in range(self.audit_sidebar_layout.count()):
+            if self.audit_sidebar_layout.itemAt(index).spacerItem():
+                self.audit_sidebar_layout.setStretch(index, 0)
+        self.audit_sidebar_layout.insertWidget(0, panel, 1)
         panel.show()
         self.right_sidebar_tabs.setCurrentWidget(self.audit_sidebar_page)
 
     def remove_auto_labeling_audit_panel(self, panel):
         self.audit_sidebar_layout.removeWidget(panel)
+        for index in range(self.audit_sidebar_layout.count()):
+            if self.audit_sidebar_layout.itemAt(index).spacerItem():
+                self.audit_sidebar_layout.setStretch(index, 1)
         panel.hide()
         panel.deleteLater()
         self.audit_empty_label.show()
@@ -5312,7 +5328,8 @@ class LabelingWidget(LabelDialog):
             self._session_pending_review_count
             + self._historical_pending_review_count
         )
-        text = auto_labeling_text_v1("pending_review_count", count=total)
+        config = getattr(self, "_config", None)
+        text = review_text_v1("entry", config, count=total)
         if hasattr(self, "audit_open_button"):
             self.audit_open_button.setText(text)
             self.audit_open_button.setEnabled(total > 0)
@@ -5321,7 +5338,7 @@ class LabelingWidget(LabelDialog):
             if index >= 0:
                 self.right_sidebar_tabs.setTabText(
                     index,
-                    auto_labeling_text_v1("audit_tab", count=total),
+                    review_text_v1("entry", config, count=total),
                 )
         auto_widget = getattr(self, "auto_labeling_widget", None)
         if auto_widget is not None:

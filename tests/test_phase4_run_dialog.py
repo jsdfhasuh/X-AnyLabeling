@@ -468,6 +468,7 @@ class FastRunRoutingTests(unittest.TestCase):
             labeling_widget=widget,
             auto_widget=SimpleNamespace(auto_labeling_host_context=None),
             tr=lambda value: value,
+            text=auto_labeling_text_v1,
         )
 
         def save():
@@ -601,6 +602,7 @@ class FastRunRoutingTests(unittest.TestCase):
                     auto_labeling_host_context=context
                 ),
                 tr=lambda value: value,
+                text=auto_labeling_text_v1,
             )
             with mock.patch.object(
                 QtWidgets.QMessageBox,

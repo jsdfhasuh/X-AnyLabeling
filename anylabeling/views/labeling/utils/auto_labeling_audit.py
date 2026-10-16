@@ -246,6 +246,10 @@ class InMemoryStagedAuditClientV1:
             "target_count": item["result_summary"].get("target_count"),
             "zero_target": item["result_summary"].get("zero_target"),
             "integrity_error": integrity_error,
+            "review_semantic_digest": item["digests"].get(
+                "staged_annotation_digest"
+            ),
+            "review_image_digest": item["digests"].get("source_image_digest"),
         }
 
     def list_review_items(self):
@@ -326,7 +330,10 @@ class InMemoryStagedAuditClientV1:
                 digests.get("staged_document_digest")
                 != current.document_digest
             )
-            if not (document_changed or semantic_changed or image_changed):
+            if not (
+                document_changed or semantic_changed or image_changed
+                or old_image is None
+            ):
                 return self._view(item)
             digests["staged_document_digest"] = current.document_digest
             digests["staged_annotation_digest"] = current.semantic_digest

@@ -16,6 +16,10 @@ from .shape import Shape
 from .utils.auto_labeling_commit import (
     atomic_write_label_document,
 )
+from .utils.auto_labeling_contracts import (
+    ContractValidationError,
+    semantic_annotation_digest_v1,
+)
 
 PIL.Image.MAX_IMAGE_PIXELS = None
 
@@ -27,11 +31,12 @@ class LabelFileError(Exception):
 class LabelFile:
     suffix = ".json"
 
-    def __init__(self, filename=None, image_dir=None):
+    def __init__(self, filename=None, image_dir=None, *, capture_audit=False):
         self.shapes = []
         self.image_path = None
         self.image_data = None
         self.image_dir = image_dir
+        self._capture_audit = capture_audit
         if filename is not None:
             self.load(filename)
         self.filename = filename
@@ -70,6 +75,15 @@ class LabelFile:
         try:
             with utils.io_open(filename, "r") as f:
                 data = json.load(f)
+            # Bind review to the document actually loaded, before legacy
+            # rectangle conversion or other display normalization.
+            semantic_digest = None
+            if self._capture_audit:
+                try:
+                    semantic_digest = semantic_annotation_digest_v1(data)
+                except ContractValidationError:
+                    # Keep legacy document loading independent of review.
+                    pass
 
             if data.get("version") is None:
                 logger.warning(
@@ -133,6 +147,7 @@ class LabelFile:
         self.image_data = image_data
         self.filename = filename
         self.other_data = other_data
+        self.semantic_digest = semantic_digest
 
     def save(
         self,

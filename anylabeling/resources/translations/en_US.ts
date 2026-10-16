@@ -5357,6 +5357,13 @@ Original images backed up to:
 </context>
 <context>
     <name>AutoLabelingPhase8</name>
+    <message><source>Run mode</source><translation>Run mode</translation></message>
+    <message><source>Cancel</source><translation>Cancel</translation></message>
+    <message><source>Model</source><translation>Model</translation></message>
+    <message><source>Minimum confidence</source><translation>Minimum confidence</translation></message>
+    <message><source>Duplicate box overlap (IoU)</source><translation>Duplicate box overlap (IoU)</translation></message>
+    <message><source>Keep detections with a confidence at or above this value.</source><translation>Keep detections with a confidence at or above this value.</translation></message>
+    <message><source>Overlapping boxes above this threshold are considered duplicates.</source><translation>Overlapping boxes above this threshold are considered duplicates.</translation></message>
     <message><source>Continuous auto-labeling...</source><translation>Continuous auto-labeling...</translation></message>
     <message><source>Continuous auto-labeling</source><translation>Continuous auto-labeling</translation></message>
     <message><source>All images</source><translation>All images</translation></message>
@@ -5480,5 +5487,260 @@ Original images backed up to:
     <message><source>Failure</source><translation>Failure</translation></message>
     <message><source>Reconciliation pending</source><translation>Reconciliation pending</translation></message>
     <message><source>Annotation integrity refresh required</source><translation>Annotation integrity refresh required</translation></message>
+</context>
+<context>
+    <name>AutoLabelingReview</name>
+    <message>
+        <source>Batch confirm...</source>
+        <translation>Batch confirm...</translation>
+    </message>
+    <message>
+        <source>Batch confirmation</source>
+        <translation>Batch confirmation</translation>
+    </message>
+    <message>
+        <source>Image range</source>
+        <translation>Image range</translation>
+    </message>
+    <message>
+        <source>All awaiting confirmation</source>
+        <translation>All awaiting confirmation</translation>
+    </message>
+    <message>
+        <source>Current image to end</source>
+        <translation>Current image to end</translation>
+    </message>
+    <message>
+        <source>{count} images selected for confirmation</source>
+        <translation>{count} images selected for confirmation</translation>
+    </message>
+    <message>
+        <source>Confirm that the selected annotations are correct without opening each image. Images marked for changes, deferred images, and changed or unreadable files are excluded.</source>
+        <translation>Confirm that the selected annotations are correct without opening each image. Images marked for changes, deferred images, and changed or unreadable files are excluded.</translation>
+    </message>
+    <message>
+        <source>Confirm {count} images</source>
+        <translation>Confirm {count} images</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <translation>Cancel</translation>
+    </message>
+    <message>
+        <source>Counting images awaiting confirmation...</source>
+        <translation>Counting images awaiting confirmation...</translation>
+    </message>
+    <message>
+        <source>Confirming selected images...</source>
+        <translation>Confirming selected images...</translation>
+    </message>
+    <message>
+        <source>Stop batch confirmation</source>
+        <translation>Stop batch confirmation</translation>
+    </message>
+    <message>
+        <source>Stopping after the current image...</source>
+        <translation>Stopping after the current image...</translation>
+    </message>
+    <message>
+        <source>Processed {processed} of {total} images</source>
+        <translation>Processed {processed} of {total} images</translation>
+    </message>
+    <message>
+        <source>Batch result: {approved} confirmed, {skipped} need checking, {remaining} not processed.</source>
+        <translation>Batch result: {approved} confirmed, {skipped} need checking, {remaining} not processed.</translation>
+    </message>
+    <message>
+        <source>Retry saving</source>
+        <translation>Retry saving</translation>
+    </message>
+    <message>
+        <source>The previous save is unfinished. Check the files and disk, then retry saving to recover it and save your edits. The image will stay open.</source>
+        <translation>The previous save is unfinished. Check the files and disk, then retry saving to recover it and save your edits. The image will stay open.</translation>
+    </message>
+    <message>
+        <source>Save changes</source>
+        <translation>Save changes</translation>
+    </message>
+    <message>
+        <source>Discard changes</source>
+        <translation>Discard changes</translation>
+    </message>
+    <message>
+        <source>Stay on this image</source>
+        <translation>Stay on this image</translation>
+    </message>
+    <message>
+        <source>Check labels</source>
+        <translation>Check labels</translation>
+    </message>
+    <message>
+        <source>Check labels ({count})</source>
+        <translation>Check labels ({count})</translation>
+    </message>
+    <message>
+        <source>No labels awaiting confirmation.</source>
+        <translation>No labels awaiting confirmation.</translation>
+    </message>
+    <message>
+        <source>Previous image</source>
+        <translation>Previous image</translation>
+    </message>
+    <message>
+        <source>Next pending image</source>
+        <translation>Next pending image</translation>
+    </message>
+    <message>
+        <source>Confirm and next</source>
+        <translation>Confirm and next</translation>
+    </message>
+    <message>
+        <source>Save, confirm and next</source>
+        <translation>Save, confirm and next</translation>
+    </message>
+    <message>
+        <source>Later</source>
+        <translation>Later</translation>
+    </message>
+    <message>
+        <source>Needs changes</source>
+        <translation>Needs changes</translation>
+    </message>
+    <message>
+        <source>Finish checking</source>
+        <translation>Finish checking</translation>
+    </message>
+    <message>
+        <source>Technical details</source>
+        <translation>Technical details</translation>
+    </message>
+    <message>
+        <source>Reload status</source>
+        <translation>Reload status</translation>
+    </message>
+    <message>
+        <source>Preparing the checklist...</source>
+        <translation>Preparing the checklist...</translation>
+    </message>
+    <message>
+        <source>Loading image...</source>
+        <translation>Loading image...</translation>
+    </message>
+    <message>
+        <source>Verifying and confirming...</source>
+        <translation>Verifying and confirming...</translation>
+    </message>
+    <message>
+        <source>Saving changes...</source>
+        <translation>Saving changes...</translation>
+    </message>
+    <message>
+        <source>Recording changes needed...</source>
+        <translation>Recording changes needed...</translation>
+    </message>
+    <message>
+        <source>Finishing safely...</source>
+        <translation>Finishing safely...</translation>
+    </message>
+    <message>
+        <source>Image {index} of {total}</source>
+        <translation>Image {index} of {total}</translation>
+    </message>
+    <message>
+        <source>Awaiting confirmation</source>
+        <translation>Awaiting confirmation</translation>
+    </message>
+    <message>
+        <source>Confirmed</source>
+        <translation>Confirmed</translation>
+    </message>
+    <message>
+        <source>Changes needed</source>
+        <translation>Changes needed</translation>
+    </message>
+    <message>
+        <source>Changed since last check</source>
+        <translation>Changed since last check</translation>
+    </message>
+    <message>
+        <source>Conflicting changes</source>
+        <translation>Conflicting changes</translation>
+    </message>
+    <message>
+        <source>Status unavailable</source>
+        <translation>Status unavailable</translation>
+    </message>
+    <message>
+        <source>Leave with unsaved changes?</source>
+        <translation>Leave with unsaved changes?</translation>
+    </message>
+    <message>
+        <source>Saved in this session</source>
+        <translation>Saved in this session</translation>
+    </message>
+    <message>
+        <source>Saved to the project</source>
+        <translation>Saved to the project</translation>
+    </message>
+    <message>
+        <source>No saved annotation</source>
+        <translation>No saved annotation</translation>
+    </message>
+    <message>
+        <source>{count} objects</source>
+        <translation>{count} objects</translation>
+    </message>
+    <message>
+        <source>No objects</source>
+        <translation>No objects</translation>
+    </message>
+    <message>
+        <source>Object count unavailable</source>
+        <translation>Object count unavailable</translation>
+    </message>
+    <message>
+        <source>{pending} awaiting confirmation  |  {approved} confirmed</source>
+        <translation>{pending} awaiting confirmation  |  {approved} confirmed</translation>
+    </message>
+    <message>
+        <source>Changes needed: {needs_fix}  |  Recheck: {stale}</source>
+        <translation>Changes needed: {needs_fix}  |  Recheck: {stale}</translation>
+    </message>
+    <message>
+        <source>This round is finished</source>
+        <translation>This round is finished</translation>
+    </message>
+    <message>
+        <source>{count} images still await confirmation.</source>
+        <translation>{count} images still await confirmation.</translation>
+    </message>
+    <message>
+        <source>No labels are awaiting confirmation.</source>
+        <translation>No labels are awaiting confirmation.</translation>
+    </message>
+    <message>
+        <source>Action did not complete. Your image has not been advanced. Check the details and reload the status before continuing.</source>
+        <translation>Action did not complete. Your image has not been advanced. Check the details and reload the status before continuing.</translation>
+    </message>
+    <message>
+        <source>Could not save. Check the destination and disk space; your edits are still on screen.</source>
+        <translation>Could not save. Check the destination and disk space; your edits are still on screen.</translation>
+    </message>
+    <message>
+        <source>The saved image or labels have changed. Check the files before confirming again.</source>
+        <translation>The saved image or labels have changed. Check the files before confirming again.</translation>
+    </message>
+    <message>
+        <source>This image could not be loaded and has not been confirmed. Retry loading it, or skip it and continue with the next image.</source>
+        <translation>This image could not be loaded and has not been confirmed. Retry loading it, or skip it and continue with the next image.</translation>
+    </message>
+    <message>
+        <source>Unsaved changes</source>
+        <translation>Unsaved changes</translation>
+    </message>
+    <message>
+        <source>Save the changes to this image before leaving?</source>
+        <translation>Save the changes to this image before leaving?</translation>
+    </message>
 </context>
 </TS>

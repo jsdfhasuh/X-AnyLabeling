@@ -7,10 +7,139 @@ from PyQt5 import QtCore
 
 TRANSLATION_CONTEXT_V1 = "AutoLabelingPhase8"
 
+
+REVIEW_TRANSLATION_CONTEXT_V1 = "AutoLabelingReview"
+REVIEW_TEXT_V1 = MappingProxyType(
+    {
+        "title": "Check labels",
+        "entry": "Check labels ({count})",
+        "empty": "No labels awaiting confirmation.",
+        "previous": "Previous image",
+        "next": "Next pending image",
+        "confirm": "Confirm and next",
+        "save_confirm": "Save, confirm and next",
+        "batch_entry": "Batch confirm...",
+        "batch_title": "Batch confirmation",
+        "batch_range": "Image range",
+        "batch_all": "All awaiting confirmation",
+        "batch_from_current": "Current image to end",
+        "batch_count": "{count} images selected for confirmation",
+        "batch_notice": (
+            "Confirm that the selected annotations are correct without "
+            "opening each image. Images marked for changes, deferred images, "
+            "and changed or unreadable files are excluded."
+        ),
+        "batch_confirm": "Confirm {count} images",
+        "batch_cancel": "Cancel",
+        "batch_prepare": "Counting images awaiting confirmation...",
+        "batch_approve": "Confirming selected images...",
+        "batch_stop": "Stop batch confirmation",
+        "batch_stopping": "Stopping after the current image...",
+        "batch_progress": "Processed {processed} of {total} images",
+        "batch_result": (
+            "Batch result: {approved} confirmed, {skipped} need checking, "
+            "{remaining} not processed."
+        ),
+        "defer": "Later",
+        "needs_fix": "Needs changes",
+        "finish": "Finish checking",
+        "details": "Technical details",
+        "reload": "Reload status",
+        "retry_save": "Retry saving",
+        "recovery_error": (
+            "The previous save is unfinished. Check the files and disk, "
+            "then retry saving to recover it and save your edits. "
+            "The image will stay open."
+        ),
+        "begin": "Preparing the checklist...",
+        "load": "Loading image...",
+        "approve": "Verifying and confirming...",
+        "saving": "Saving changes...",
+        "marking": "Recording changes needed...",
+        "finishing": "Finishing safely...",
+        "position": "Image {index} of {total}",
+        "pending": "Awaiting confirmation",
+        "approved": "Confirmed",
+        "needs_fix_status": "Changes needed",
+        "stale": "Changed since last check",
+        "conflict": "Conflicting changes",
+        "unknown": "Status unavailable",
+        "dirty": "Unsaved changes",
+        "saved": "Saved in this session",
+        "source_saved": "Saved to the project",
+        "not_saved": "No saved annotation",
+        "targets": "{count} objects",
+        "no_targets": "No objects",
+        "count_unknown": "Object count unavailable",
+        "summary": "{pending} awaiting confirmation  |  {approved} confirmed",
+        "summary_detail": "Changes needed: {needs_fix}  |  Recheck: {stale}",
+        "complete": "This round is finished",
+        "remaining": "{count} images still await confirmation.",
+        "all_done": "No labels are awaiting confirmation.",
+        "error": (
+            "Action did not complete. Your image has not been advanced. "
+            "Check the details and reload the status before continuing."
+        ),
+        "save_error": (
+            "Could not save. Check the destination and disk space; "
+            "your edits are still on screen."
+        ),
+        "load_error": (
+            "This image could not be loaded and has not been confirmed. "
+            "Retry loading it, or skip it and continue with the next image."
+        ),
+        "integrity_error": (
+            "The saved image or labels have changed. "
+            "Check the files before confirming again."
+        ),
+        "unsaved_title": "Leave with unsaved changes?",
+        "unsaved_prompt": "Save the changes to this image before leaving?",
+        "save": "Save changes",
+        "discard": "Discard changes",
+        "cancel": "Stay on this image",
+    }
+)
+_REVIEW_TRANSLATORS = {}
+
+
+def review_text_v1(key, config=None, **values):
+    """Translate review UI without an application-wide translator."""
+    config = config or {}
+    return _configured_text_v1(
+        REVIEW_TRANSLATION_CONTEXT_V1, REVIEW_TEXT_V1[key], config,
+    ).format(**values)
+
+
+def _configured_text_v1(context, source, config):
+    language = config.get("review_language", config.get("language", "en_US"))
+    if language not in _REVIEW_TRANSLATORS:
+        translator = QtCore.QTranslator()
+        if language in {"zh_CN", "en_US"}:
+            from importlib.resources import as_file, files
+
+            resource = files("anylabeling").joinpath(
+                "resources", "translations", f"{language}.qm"
+            )
+            with as_file(resource) as path:
+                translator.load(str(path))
+        _REVIEW_TRANSLATORS[language] = translator
+    translated = _REVIEW_TRANSLATORS[language].translate(
+        context, source
+    )
+    return translated or source
+
+
 AUTO_LABELING_TEXT_V1 = MappingProxyType(
     {
         "continuous_entry": "Continuous auto-labeling...",
         "continuous_title": "Continuous auto-labeling",
+        "run_mode": "Run mode",
+        "cancel": "Cancel",
+        "model_name": "Model",
+        "confidence": "Minimum confidence",
+        "overlap": "Duplicate box overlap (IoU)",
+        "confidence_help": "Keep detections with a confidence at or above this value.",
+        "overlap_help": "Overlapping boxes above this threshold are considered duplicates.",
         "all_images": "All images",
         "current_to_end": "Current image to end",
         "base_range": "Base range",
@@ -216,16 +345,18 @@ _REVIEW_PROGRESS_KEYS = {
 }
 
 
-def auto_labeling_text_v1(key, **values):
+def auto_labeling_text_v1(key, config=None, **values):
     source = AUTO_LABELING_TEXT_V1[key]
-    translated = QtCore.QCoreApplication.translate(
-        TRANSLATION_CONTEXT_V1,
-        source,
-    )
+    if config and ("review_language" in config or "language" in config):
+        translated = _configured_text_v1(TRANSLATION_CONTEXT_V1, source, config)
+    else:
+        translated = QtCore.QCoreApplication.translate(
+            TRANSLATION_CONTEXT_V1, source,
+        )
     return translated.format(**values) if values else translated
 
 
-def auto_labeling_status_text_v1(value, domain):
+def auto_labeling_status_text_v1(value, domain, config=None):
     maps = {
         "review": _REVIEW_STATUS_KEYS,
         "commit": _COMMIT_STATUS_KEYS,
@@ -233,19 +364,19 @@ def auto_labeling_status_text_v1(value, domain):
         "review_progress": _REVIEW_PROGRESS_KEYS,
     }
     key = maps[domain].get(str(value))
-    return auto_labeling_text_v1(key) if key else str(value)
+    return auto_labeling_text_v1(key, config=config) if key else str(value)
 
 
-def auto_labeling_boolean_text_v1(value):
-    return auto_labeling_text_v1("yes" if bool(value) else "no")
+def auto_labeling_boolean_text_v1(value, config=None):
+    return auto_labeling_text_v1("yes" if bool(value) else "no", config=config)
 
 
-def auto_labeling_error_category_v1(error_code):
+def auto_labeling_error_category_v1(error_code, config=None):
     normalized = str(error_code or "").lower()
     if "reconcil" in normalized:
-        return auto_labeling_text_v1("reconciliation_pending")
+        return auto_labeling_text_v1("reconciliation_pending", config=config)
     if "recover" in normalized or "integrity" in normalized:
-        return auto_labeling_text_v1("status_recovery_required")
+        return auto_labeling_text_v1("status_recovery_required", config=config)
     if "conflict" in normalized or "mismatch" in normalized:
-        return auto_labeling_text_v1("status_conflict")
-    return auto_labeling_text_v1("failure")
+        return auto_labeling_text_v1("status_conflict", config=config)
+    return auto_labeling_text_v1("failure", config=config)

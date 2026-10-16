@@ -47,6 +47,7 @@ from anylabeling.views.labeling.utils.auto_labeling_host import (
     validate_auto_labeling_host_context,
 )
 from anylabeling.views.labeling.utils.auto_labeling_i18n import (
+    review_text_v1,
     auto_labeling_text_v1,
 )
 
@@ -447,8 +448,8 @@ class AutoLabelingWidget(QWidget):
     def set_pending_review_count(self, count):
         self._pending_review_count = max(0, int(count or 0))
         self.button_pending_review.setText(
-            auto_labeling_text_v1(
-                "pending_review_count",
+            review_text_v1(
+                "entry", getattr(self.parent, "_config", None),
                 count=self._pending_review_count,
             )
         )

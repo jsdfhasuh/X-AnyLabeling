@@ -15,6 +15,9 @@ from anylabeling.views.labeling.utils.auto_labeling_commit import (
     canonical_document_digest_v1,
     resolve_existing_label,
 )
+from anylabeling.views.labeling.utils.auto_labeling_contracts import (
+    semantic_annotation_digest_v1,
+)
 
 
 class LabelFileAtomicSaveRegressionTests(unittest.TestCase):
@@ -25,6 +28,36 @@ class LabelFileAtomicSaveRegressionTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_review_load_records_digest_before_legacy_shape_conversion(self):
+        Image.new("RGB", (8, 6), (1, 2, 3)).save(self.root / "sample.png")
+        document = {
+            "version": __version__, "shapes": [self._rectangle()],
+            "flags": {}, "imagePath": "sample.png", "imageData": None,
+            "imageHeight": 6, "imageWidth": 8,
+        }
+        self.label_path.write_text(json.dumps(document), encoding="utf-8")
+        label = LabelFile(self.label_path, capture_audit=True)
+        expected = semantic_annotation_digest_v1(
+            json.loads(self.label_path.read_text(encoding="utf-8"))
+        )
+        self.assertEqual(label.semantic_digest, expected)
+        self.assertEqual(len(label.shapes[0].points), 4)
+
+    def test_normal_load_does_not_compute_review_digest(self):
+        Image.new("RGB", (8, 6), (1, 2, 3)).save(self.root / "sample.png")
+        document = {
+            "version": __version__, "shapes": [], "flags": {},
+            "imagePath": "sample.png", "imageData": None,
+            "imageHeight": 6, "imageWidth": 8,
+        }
+        self.label_path.write_text(json.dumps(document), encoding="utf-8")
+        with mock.patch(
+            "anylabeling.views.labeling.label_file.semantic_annotation_digest_v1",
+        ) as digest:
+            label = LabelFile(self.label_path)
+        digest.assert_not_called()
+        self.assertIsNone(label.semantic_digest)
 
     @staticmethod
     def _rectangle():

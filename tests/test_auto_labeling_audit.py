@@ -203,6 +203,26 @@ class StandaloneStagedAuditTests(unittest.TestCase):
         self.assertEqual(summary["source_approved"], 1)
         self.assertNotIn("approved", summary)
 
+    def test_worker_normalizes_real_standalone_conflict_summary(self):
+        from anylabeling.views.labeling.widgets.auto_labeling_audit_dialog import (
+            _StagedAuditOperationWorker,
+        )
+
+        self.store.update_item(
+            self.run_id, "image-a", 0, {"review_status": "conflict"},
+        )
+        worker = _StagedAuditOperationWorker(self.client)
+        for operation in ("begin", "complete", "needs_fix", "approve"):
+            result = worker._execute(operation, {"image_id": "image-a"})
+            actual = result["summary"]
+            expected = self.client.summary()
+            expected["stale"] += expected.pop("conflict", 0)
+            self.assertEqual(actual, expected)
+            self.assertTrue(all(value >= 0 for value in actual.values()))
+            self.assertEqual(
+                actual["pending_review"], 0 if operation == "approve" else 1,
+            )
+
     def test_integrity_refresh_distinguishes_document_and_semantic_change(
         self,
     ):

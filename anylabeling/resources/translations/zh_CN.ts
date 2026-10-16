@@ -6662,57 +6662,64 @@ Original images backed up to:
 </context>
 <context>
     <name>AutoLabelingPhase8</name>
-    <message><source>Continuous auto-labeling...</source><translation>连续自动标注...</translation></message>
-    <message><source>Continuous auto-labeling</source><translation>连续自动标注</translation></message>
+    <message><source>Run mode</source><translation>运行方式</translation></message>
+    <message><source>Cancel</source><translation>取消</translation></message>
+    <message><source>Model</source><translation>当前模型</translation></message>
+    <message><source>Minimum confidence</source><translation>最低可信度</translation></message>
+    <message><source>Duplicate box overlap (IoU)</source><translation>重叠框去重阈值</translation></message>
+    <message><source>Keep detections with a confidence at or above this value.</source><translation>仅保留可信度达到此值的识别结果。值越高，保留的结果越少。</translation></message>
+    <message><source>Overlapping boxes above this threshold are considered duplicates.</source><translation>同一目标的候选框重叠程度超过此值时进行去重。值越低，去重越严格。</translation></message>
+    <message><source>Continuous auto-labeling...</source><translation>批量自动标注…</translation></message>
+    <message><source>Continuous auto-labeling</source><translation>批量自动标注</translation></message>
     <message><source>All images</source><translation>全部图片</translation></message>
-    <message><source>Current image to end</source><translation>当前图片到末尾</translation></message>
-    <message><source>Base range</source><translation>基础范围</translation></message>
-    <message><source>All</source><translation>全部</translation></message>
-    <message><source>Only images without a valid annotation</source><translation>仅无有效标注的图片</translation></message>
-    <message><source>Filter</source><translation>筛选</translation></message>
-    <message><source>Skip existing annotations</source><translation>跳过已有标注</translation></message>
-    <message><source>Force replace</source><translation>强制替换</translation></message>
+    <message><source>Current image to end</source><translation>从当前图片到最后一张</translation></message>
+    <message><source>Base range</source><translation>处理范围</translation></message>
+    <message><source>All</source><translation>不过滤</translation></message>
+    <message><source>Only images without a valid annotation</source><translation>只处理尚无有效标注的图片</translation></message>
+    <message><source>Filter</source><translation>图片筛选</translation></message>
+    <message><source>Skip existing annotations</source><translation>保留已有标注（跳过）</translation></message>
+    <message><source>Force replace</source><translation>重新标注（覆盖已有结果）</translation></message>
     <message><source>Confirm replacement</source><translation>确认覆盖</translation></message>
-    <message><source>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</source><translation>Replace 可能覆盖当前范围内 {count} 个有效的已有标注。本次选择仅对当前操作生效。是否继续？</translation></message>
-    <message><source>Write policy</source><translation>写入策略</translation></message>
+    <message><source>Replace may overwrite {count} valid existing annotation(s) in this scope. This choice is used only for this operation. Continue?</source><translation>当前列表中有 {count} 张图片已有有效标注，处理范围内的已有结果可能被覆盖。此选择仅用于本次任务。是否继续？</translation></message>
+    <message><source>Write policy</source><translation>已有标注怎么处理</translation></message>
     <message><source> s</source><translation> 秒</translation></message>
-    <message><source>Dwell time</source><translation>停留时间</translation></message>
-    <message><source>Model and parameters</source><translation>模型与参数</translation></message>
-    <message><source>Workset images</source><translation>工作集图片</translation></message>
-    <message><source>Existing annotations</source><translation>已有标注</translation></message>
-    <message><source>Host preparation failures</source><translation>宿主准备失败</translation></message>
-    <message><source>Fast</source><translation>快速</translation></message>
-    <message><source>Fast: infer and save each image in the background without switching the main canvas.</source><translation>快速：在后台逐图推理并保存，不切换主画布。</translation></message>
-    <message><source>Start Fast auto-labeling</source><translation>开始快速自动标注</translation></message>
-    <message><source>Visible</source><translation>可视</translation></message>
-    <message><source>Visible: display each result after a verified save, then advance after the configured dwell time.</source><translation>可视：每张结果验证保存后显示，并在设定的停留时间后继续。</translation></message>
-    <message><source>Start Visible auto-labeling</source><translation>开始可视自动标注</translation></message>
-    <message><source>Continuous auto-labeling progress</source><translation>连续自动标注进度</translation></message>
+    <message><source>Dwell time</source><translation>每张预览停留</translation></message>
+    <message><source>Model and parameters</source><translation>当前模型与参数</translation></message>
+    <message><source>Workset images</source><translation>列表图片总数</translation></message>
+    <message><source>Existing annotations</source><translation>列表中已有标注</translation></message>
+    <message><source>Host preparation failures</source><translation>无法准备的图片</translation></message>
+    <message><source>Fast</source><translation>后台快速标注</translation></message>
+    <message><source>Fast: infer and save each image in the background without switching the main canvas.</source><translation>后台自动识别并保存，不逐张切换预览。</translation></message>
+    <message><source>Start Fast auto-labeling</source><translation>开始后台标注</translation></message>
+    <message><source>Visible</source><translation>逐张预览结果</translation></message>
+    <message><source>Visible: display each result after a verified save, then advance after the configured dwell time.</source><translation>每张图片保存后显示结果，停留指定秒数再继续下一张。</translation></message>
+    <message><source>Start Visible auto-labeling</source><translation>开始标注并预览</translation></message>
+    <message><source>Continuous auto-labeling progress</source><translation>批量标注进度</translation></message>
     <message><source>Preparing</source><translation>正在准备</translation></message>
-    <message><source>Configured dwell time</source><translation>设定停留时间</translation></message>
-    <message><source>Remaining dwell time</source><translation>剩余停留时间</translation></message>
-    <message><source>Workset total</source><translation>工作集总数</translation></message>
-    <message><source>Selected by range</source><translation>范围内选中</translation></message>
-    <message><source>Eligible for inference</source><translation>可执行推理</translation></message>
-    <message><source>Safely saved</source><translation>已安全保存</translation></message>
+    <message><source>Configured dwell time</source><translation>每张预览停留</translation></message>
+    <message><source>Remaining dwell time</source><translation>本张剩余停留</translation></message>
+    <message><source>Workset total</source><translation>列表图片总数</translation></message>
+    <message><source>Selected by range</source><translation>处理范围内图片</translation></message>
+    <message><source>Eligible for inference</source><translation>需要自动标注</translation></message>
+    <message><source>Safely saved</source><translation>已保存</translation></message>
     <message><source>Succeeded</source><translation>成功</translation></message>
-    <message><source>Zero target</source><translation>零目标</translation></message>
+    <message><source>Zero target</source><translation>未发现目标</translation></message>
     <message><source>Skipped existing</source><translation>跳过已有标注</translation></message>
     <message><source>Skipped outside range</source><translation>跳过范围外图片</translation></message>
-    <message><source>Host preparation failed</source><translation>宿主准备失败</translation></message>
-    <message><source>Failed input</source><translation>输入失败</translation></message>
-    <message><source>Unresolved model failures</source><translation>未解决的模型失败</translation></message>
-    <message><source>Explicit error skips</source><translation>明确跳过的错误</translation></message>
-    <message><source>Conflicts</source><translation>冲突</translation></message>
-    <message><source>Pending review</source><translation>待审计</translation></message>
-    <message><source>Pending review {count}</source><translation>待审核 {count}</translation></message>
+    <message><source>Host preparation failed</source><translation>图片准备失败</translation></message>
+    <message><source>Failed input</source><translation>图片读取失败</translation></message>
+    <message><source>Unresolved model failures</source><translation>识别失败待处理</translation></message>
+    <message><source>Explicit error skips</source><translation>已跳过的失败图片</translation></message>
+    <message><source>Conflicts</source><translation>文件发生冲突</translation></message>
+    <message><source>Pending review</source><translation>待检查</translation></message>
+    <message><source>Pending review {count}</source><translation>待检查 {count}</translation></message>
     <message><source>Labels</source><translation>标签</translation></message>
     <message><source>Auto labeling</source><translation>自动标注</translation></message>
     <message><source>Review ({count})</source><translation>审核 ({count})</translation></message>
     <message><source>No pending image in this session.</source><translation>当前 Session 没有待审核图片。</translation></message>
     <message><source>Remaining</source><translation>剩余</translation></message>
-    <message><source>Processing status</source><translation>处理状态</translation></message>
-    <message><source>Completed with errors</source><translation>完成但存在错误</translation></message>
+    <message><source>Processing status</source><translation>任务状态</translation></message>
+    <message><source>Completed with errors</source><translation>存在失败项</translation></message>
     <message><source>Pause and edit</source><translation>暂停并编辑</translation></message>
     <message><source>Finish the current image safely, then unlock drawing and saving.</source><translation>当前图片安全保存完成后，解锁绘制和保存。</translation></message>
     <message><source>Stop</source><translation>停止</translation></message>
@@ -6721,10 +6728,10 @@ Original images backed up to:
     <message><source>Review now</source><translation>立即审计</translation></message>
     <message><source>Review later</source><translation>稍后审计</translation></message>
     <message><source>Preparing the image</source><translation>正在准备图片</translation></message>
-    <message><source>Running inference</source><translation>正在推理</translation></message>
-    <message><source>Saving safely</source><translation>正在安全保存</translation></message>
+    <message><source>Running inference</source><translation>正在识别目标</translation></message>
+    <message><source>Saving safely</source><translation>正在保存标注</translation></message>
     <message><source>Saved result displayed</source><translation>已显示保存结果</translation></message>
-    <message><source>Waiting for error resolution</source><translation>等待处理错误</translation></message>
+    <message><source>Waiting for error resolution</source><translation>等待处理失败图片</translation></message>
     <message><source>Paused - editing enabled</source><translation>已暂停 - 可编辑</translation></message>
     <message><source>Paused</source><translation>已暂停</translation></message>
     <message><source>Pausing safely after the current image is saved...</source><translation>正在安全暂停，等待当前图片保存完成...</translation></message>
@@ -6785,5 +6792,260 @@ Original images backed up to:
     <message><source>Failure</source><translation>失败</translation></message>
     <message><source>Reconciliation pending</source><translation>等待对账</translation></message>
     <message><source>Annotation integrity refresh required</source><translation>需要刷新标注完整性</translation></message>
+</context>
+<context>
+    <name>AutoLabelingReview</name>
+    <message>
+        <source>Batch confirm...</source>
+        <translation>批量确认…</translation>
+    </message>
+    <message>
+        <source>Batch confirmation</source>
+        <translation>批量确认</translation>
+    </message>
+    <message>
+        <source>Image range</source>
+        <translation>确认范围</translation>
+    </message>
+    <message>
+        <source>All awaiting confirmation</source>
+        <translation>全部待确认</translation>
+    </message>
+    <message>
+        <source>Current image to end</source>
+        <translation>从当前图片到末尾</translation>
+    </message>
+    <message>
+        <source>{count} images selected for confirmation</source>
+        <translation>本次将确认 {count} 张图片</translation>
+    </message>
+    <message>
+        <source>Confirm that the selected annotations are correct without opening each image. Images marked for changes, deferred images, and changed or unreadable files are excluded.</source>
+        <translation>确认所选图片的标注均正确，不再逐张打开。已标记“需要修改”、已暂不处理，以及文件有变化或无法读取的图片将跳过。</translation>
+    </message>
+    <message>
+        <source>Confirm {count} images</source>
+        <translation>确认这 {count} 张</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <translation>取消</translation>
+    </message>
+    <message>
+        <source>Counting images awaiting confirmation...</source>
+        <translation>正在统计待确认图片…</translation>
+    </message>
+    <message>
+        <source>Confirming selected images...</source>
+        <translation>正在批量确认…</translation>
+    </message>
+    <message>
+        <source>Stop batch confirmation</source>
+        <translation>停止批量确认</translation>
+    </message>
+    <message>
+        <source>Stopping after the current image...</source>
+        <translation>完成当前图片后停止…</translation>
+    </message>
+    <message>
+        <source>Processed {processed} of {total} images</source>
+        <translation>已处理 {processed} / {total} 张</translation>
+    </message>
+    <message>
+        <source>Batch result: {approved} confirmed, {skipped} need checking, {remaining} not processed.</source>
+        <translation>本次结果：已确认 {approved} 张，需检查 {skipped} 张，未处理 {remaining} 张。</translation>
+    </message>
+    <message>
+        <source>Retry saving</source>
+        <translation>重试保存</translation>
+    </message>
+    <message>
+        <source>The previous save is unfinished. Check the files and disk, then retry saving to recover it and save your edits. The image will stay open.</source>
+        <translation>上次保存尚未完成。请检查文件和磁盘后重试保存，以恢复保存状态并保存当前修改；图片不会切换。</translation>
+    </message>
+    <message>
+        <source>Save changes</source>
+        <translation>保存修改</translation>
+    </message>
+    <message>
+        <source>Discard changes</source>
+        <translation>放弃修改</translation>
+    </message>
+    <message>
+        <source>Stay on this image</source>
+        <translation>留在当前图片</translation>
+    </message>
+    <message>
+        <source>Check labels</source>
+        <translation>检查标注</translation>
+    </message>
+    <message>
+        <source>Check labels ({count})</source>
+        <translation>检查标注（{count}）</translation>
+    </message>
+    <message>
+        <source>No labels awaiting confirmation.</source>
+        <translation>暂无待检查的标注</translation>
+    </message>
+    <message>
+        <source>Previous image</source>
+        <translation>上一张</translation>
+    </message>
+    <message>
+        <source>Next pending image</source>
+        <translation>下一张待检查</translation>
+    </message>
+    <message>
+        <source>Confirm and next</source>
+        <translation>确认正确，下一张</translation>
+    </message>
+    <message>
+        <source>Save, confirm and next</source>
+        <translation>保存并确认，下一张</translation>
+    </message>
+    <message>
+        <source>Later</source>
+        <translation>暂不处理</translation>
+    </message>
+    <message>
+        <source>Needs changes</source>
+        <translation>需要修改</translation>
+    </message>
+    <message>
+        <source>Finish checking</source>
+        <translation>结束检查</translation>
+    </message>
+    <message>
+        <source>Technical details</source>
+        <translation>技术详情</translation>
+    </message>
+    <message>
+        <source>Reload status</source>
+        <translation>重新读取状态</translation>
+    </message>
+    <message>
+        <source>Preparing the checklist...</source>
+        <translation>正在整理待检查图片…</translation>
+    </message>
+    <message>
+        <source>Loading image...</source>
+        <translation>正在读取图片…</translation>
+    </message>
+    <message>
+        <source>Verifying and confirming...</source>
+        <translation>正在校验并确认…</translation>
+    </message>
+    <message>
+        <source>Saving changes...</source>
+        <translation>正在保存修改…</translation>
+    </message>
+    <message>
+        <source>Recording changes needed...</source>
+        <translation>正在记录待修改状态…</translation>
+    </message>
+    <message>
+        <source>Finishing safely...</source>
+        <translation>正在安全结束，请稍候…</translation>
+    </message>
+    <message>
+        <source>Image {index} of {total}</source>
+        <translation>第 {index} / {total} 张</translation>
+    </message>
+    <message>
+        <source>Awaiting confirmation</source>
+        <translation>待确认</translation>
+    </message>
+    <message>
+        <source>Confirmed</source>
+        <translation>已确认</translation>
+    </message>
+    <message>
+        <source>Changes needed</source>
+        <translation>待修改</translation>
+    </message>
+    <message>
+        <source>Changed since last check</source>
+        <translation>标注已变化，需重新检查</translation>
+    </message>
+    <message>
+        <source>Conflicting changes</source>
+        <translation>标注存在冲突</translation>
+    </message>
+    <message>
+        <source>Status unavailable</source>
+        <translation>状态暂不可用</translation>
+    </message>
+    <message>
+        <source>Unsaved changes</source>
+        <translation>有修改尚未保存</translation>
+    </message>
+    <message>
+        <source>Saved in this session</source>
+        <translation>已保存在本次任务中</translation>
+    </message>
+    <message>
+        <source>Saved to the project</source>
+        <translation>已保存到项目</translation>
+    </message>
+    <message>
+        <source>No saved annotation</source>
+        <translation>尚无已保存的标注</translation>
+    </message>
+    <message>
+        <source>{count} objects</source>
+        <translation>{count} 个目标</translation>
+    </message>
+    <message>
+        <source>No objects</source>
+        <translation>无目标</translation>
+    </message>
+    <message>
+        <source>Object count unavailable</source>
+        <translation>目标数量暂不可用</translation>
+    </message>
+    <message>
+        <source>{pending} awaiting confirmation  |  {approved} confirmed</source>
+        <translation>待确认 {pending} 张  ·  已确认 {approved} 张</translation>
+    </message>
+    <message>
+        <source>Changes needed: {needs_fix}  |  Recheck: {stale}</source>
+        <translation>待修改 {needs_fix} 张  ·  需重查 {stale} 张</translation>
+    </message>
+    <message>
+        <source>This round is finished</source>
+        <translation>本轮检查结束</translation>
+    </message>
+    <message>
+        <source>{count} images still await confirmation.</source>
+        <translation>仍有 {count} 张未确认</translation>
+    </message>
+    <message>
+        <source>No labels are awaiting confirmation.</source>
+        <translation>当前没有待确认的标注</translation>
+    </message>
+    <message>
+        <source>Action did not complete. Your image has not been advanced. Check the details and reload the status before continuing.</source>
+        <translation>操作未完成，未切换图片。请查看详情并重新读取状态后继续。</translation>
+    </message>
+    <message>
+        <source>Could not save. Check the destination and disk space; your edits are still on screen.</source>
+        <translation>保存未成功。请检查保存位置和磁盘空间，当前修改仍保留在画布上。</translation>
+    </message>
+    <message>
+        <source>The saved image or labels have changed. Check the files before confirming again.</source>
+        <translation>图片或标注文件已发生变化，请核对文件后再确认。</translation>
+    </message>
+    <message>
+        <source>This image could not be loaded and has not been confirmed. Retry loading it, or skip it and continue with the next image.</source>
+        <translation>这张图片未能加载，尚未确认。可以重新加载，或先跳过，继续检查下一张。</translation>
+    </message>
+    <message>
+        <source>Leave with unsaved changes?</source>
+        <translation>修改尚未保存</translation>
+    </message>
+    <message>
+        <source>Save the changes to this image before leaving?</source>
+        <translation>离开当前图片前，是否保存修改？</translation>
+    </message>
 </context>
 </TS>

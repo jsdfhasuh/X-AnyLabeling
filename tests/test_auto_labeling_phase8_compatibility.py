@@ -10,8 +10,11 @@ from PyQt5 import QtCore
 from anylabeling.views.labeling.utils import batch
 from anylabeling.views.labeling.utils.auto_labeling_i18n import (
     AUTO_LABELING_TEXT_V1,
+    REVIEW_TEXT_V1,
+    REVIEW_TRANSLATION_CONTEXT_V1,
     TRANSLATION_CONTEXT_V1,
     auto_labeling_text_v1,
+    review_text_v1,
 )
 from anylabeling.views.labeling.utils.auto_labeling_sequence import (
     LEGACY_BATCH_ROUTE_V1,
@@ -275,6 +278,41 @@ class Phase8ConfigTranslationAndDocsTests(unittest.TestCase):
             "recursive-include anylabeling/resources/translations *.qm",
             manifest.splitlines(),
         )
+
+    def test_review_catalogs_and_explicit_language_are_independent(self):
+        app = QtCore.QCoreApplication.instance() or QtCore.QCoreApplication([])
+        before = auto_labeling_text_v1("audit_title")
+        translations = ROOT / "anylabeling" / "resources" / "translations"
+        values = {
+            "count": 4, "index": 1, "total": 4, "pending": 4,
+            "approved": 338, "needs_fix": 1, "stale": 0,
+            "processed": 2, "skipped": 1, "remaining": 1,
+        }
+        for language in ("en_US", "zh_CN"):
+            root = ET.parse(translations / f"{language}.ts").getroot()
+            context = next(
+                c for c in root.findall("context")
+                if c.findtext("name") == REVIEW_TRANSLATION_CONTEXT_V1
+            )
+            messages = {
+                m.findtext("source"): m.findtext("translation")
+                for m in context.findall("message")
+            }
+            self.assertEqual(set(REVIEW_TEXT_V1.values()), set(messages))
+            for key, source in REVIEW_TEXT_V1.items():
+                self.assertEqual(
+                    review_text_v1(key, {"review_language": language}, **values),
+                    messages[source].format(**values),
+                )
+        self.assertEqual(auto_labeling_text_v1("audit_title"), before)
+        self.assertEqual(
+            review_text_v1("title", {"language": "en_US",
+                                   "review_language": "zh_CN"}),
+            "\u68c0\u67e5\u6807\u6ce8",
+        )
+        self.assertEqual(review_text_v1("title", {"language": "en_US"}),
+                         "Check labels")
+        self.assertIsNotNone(app)
 
 
 if __name__ == "__main__":

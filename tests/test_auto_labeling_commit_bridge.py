@@ -672,6 +672,7 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
 
     def test_auto_save_failure_stays_dirty_until_original_event_replays(self):
         self._configure_save_surface(auto_save=True)
+        self.widget.annotation_changed = mock.Mock()
         self.widget.dirty = False
         self.sink.publish.side_effect = [
             RuntimeError("response lost"),
@@ -685,6 +686,7 @@ class AnnotationCommitBridgeTests(unittest.TestCase):
         self.widget.set_clean.assert_not_called()
         first_event = self.sink.publish.call_args_list[0].args[0]
         self.assertEqual(first_event["writer_kind"], "AUTO_SAVE")
+        self.widget.annotation_changed.emit.assert_called_once_with()
 
         self.assertEqual(
             self.bridge.integrity_refresh(),
@@ -809,6 +811,7 @@ class LabelingWidgetSaveRoutingTests(unittest.TestCase):
             save_labels=mock.Mock(return_value=True),
             set_clean=mock.Mock(),
             filename="C:/images/image.png",
+            annotation_changed=mock.Mock(),
         )
         LabelingWidget.set_dirty(widget)
         widget.save_labels.assert_called_once_with(
@@ -816,6 +819,7 @@ class LabelingWidgetSaveRoutingTests(unittest.TestCase):
             writer_kind="AUTO_SAVE",
         )
         widget.set_clean.assert_called_once_with()
+        widget.annotation_changed.emit.assert_called_once_with()
 
         manual = SimpleNamespace(
             save_labels=mock.Mock(return_value=True),
@@ -840,6 +844,7 @@ class LabelingWidgetSaveRoutingTests(unittest.TestCase):
             set_clean=mock.Mock(),
             filename="C:/images/image.png",
             dirty=False,
+            annotation_changed=mock.Mock(),
         )
 
         LabelingWidget.set_dirty(widget)
@@ -847,6 +852,7 @@ class LabelingWidgetSaveRoutingTests(unittest.TestCase):
         self.assertTrue(widget.dirty)
         save_action.setEnabled.assert_called_once_with(True)
         widget.set_clean.assert_not_called()
+        widget.annotation_changed.emit.assert_called_once_with()
 
     def test_menu_save_failure_returns_false_and_never_sets_clean(self):
         manual = SimpleNamespace(
