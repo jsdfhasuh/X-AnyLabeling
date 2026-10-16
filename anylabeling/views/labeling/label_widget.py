@@ -4924,6 +4924,21 @@ class LabelingWidget(LabelDialog):
             self.file_list_widget.repaint()
             return False
 
+        previous_view = None
+        if (
+            self._config["keep_prev_scale"]
+            and self.filename
+            and self.canvas.pixmap is not None
+            and not self.canvas.pixmap.isNull()
+        ):
+            previous_view = (
+                self.zoom_widget.value(),
+                {
+                    orientation: bar.value()
+                    for orientation, bar in self.scroll_bars.items()
+                },
+            )
+
         self.reset_state()
         self.canvas.setEnabled(False)
         if filename is None:
@@ -5053,17 +5068,22 @@ class LabelingWidget(LabelDialog):
         self.canvas.setEnabled(True)
         # set zoom values
         is_initial_load = not self.zoom_values
-        if self.filename in self.zoom_values:
+        if previous_view is not None:
+            self.set_zoom(previous_view[0])
+        elif self.filename in self.zoom_values:
             self.zoom_mode = self.zoom_values[self.filename][0]
             self.set_zoom(self.zoom_values[self.filename][1])
         elif is_initial_load or not self._config["keep_prev_scale"]:
             self.adjust_scale(initial=True)
-        # set scroll values
-        for orientation in self.scroll_values:
-            if self.filename in self.scroll_values[orientation]:
-                self.set_scroll(
-                    orientation, self.scroll_values[orientation][self.filename]
-                )
+        scroll_values = (
+            previous_view[1]
+            if previous_view is not None
+            else {
+                orientation: values[self.filename]
+                for orientation, values in self.scroll_values.items()
+                if self.filename in values
+            }
+        )
         # set brightness contrast values
         self.brightness_contrast_dialog.update_image(
             utils.img_data_to_pil(self.image_data)
@@ -5091,6 +5111,9 @@ class LabelingWidget(LabelDialog):
             self.brightness_contrast_dialog.on_new_value()
 
         self.paint_canvas()
+        # Resize the new canvas before restoring offsets; Qt clamps at edges.
+        for orientation, value in scroll_values.items():
+            self.set_scroll(orientation, value)
         self.add_recent_file(self.filename)
         self.toggle_actions(True)
         self.canvas.setFocus()
